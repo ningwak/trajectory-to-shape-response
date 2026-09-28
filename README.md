@@ -12,7 +12,7 @@ Repository: [ningwak/trajectory-to-shape-response](https://github.com/ningwak/tr
 
 ## Important interpretation rules
 
-- The JSON `rectangle_corners` field is drawn only as a reference rectangle. It is **not** treated as the splitter.
+- The JSON `rectangle_corners` field is drawn only as the nominal route boundary. It is **not** treated as the splitter.
 - `corridor_width_m` is retained as source metadata. Its exact experiment-specific semantics are not documented in the supplied JSON, so it is **not** used to place the splitter.
 - The inferred line is called an **effective trajectory separator**. It estimates the boundary between observed route families; it does not claim to recover the physical barrier pose.
 - MP4 files are not inputs. Every Python discovery path is restricted to files named `R<robot_id>_*.json`; no script discovers, enumerates, opens, or decodes video.
@@ -41,11 +41,11 @@ The loader validates required metadata and `time, x, y, theta` samples, converts
 - estimates `vx`, `vy`, and `omega` with a past-only 0.25 s finite-difference window;
 - marks kinematics valid only when the complete lag window contains valid poses.
 
-`valid_pose`, `valid_kinematics`, and `forward_motion_valid` are quality masks, not learned state features. `forward_motion_valid` requires valid kinematics, positive local longitudinal speed, and a bounded lateral-to-longitudinal velocity ratio.
+`valid_pose` and `valid_kinematics` are quality masks, not learned state features. No additional motion-validity flag is calculated because it was not used by the selected state or evaluation metrics.
 
 ### B. Full trajectories and local response discovery
 
-`01_full_trajectories.png` draws every robot path for baseline and barrier runs on equal world-coordinate axes. The dashed polygon is the JSON reference rectangle; no splitter is drawn at this stage.
+`01_full_trajectories.png` draws every robot path for baseline and barrier runs with shared global `x/y` limits and the same 1:1 physical scale. The dashed polygon is the nominal route stored in the JSON; no splitter is drawn at this stage.
 
 To locate the local response region without video or manual coordinates:
 
@@ -61,7 +61,7 @@ Passage-level lateral crossings are interpolated on a sequence of sections perpe
 - 1-D Wasserstein distance compares baseline and changed lateral distributions;
 - a baseline-vs-baseline random split supplies a 95% null threshold;
 - deterministic `K=2` 1-D K-means summarizes the two changed-condition route families;
-- minimum cluster support, center separation, silhouette, and section support reject weak sections.
+- the stable splitter core requires at least three samples per route, at least 0.25 m center separation, silhouette at least 0.55, a depleted midpoint gap, and centers on opposite sides of the baseline median path.
 
 A robust line through valid cluster midpoints gives
 
@@ -73,12 +73,14 @@ Four virtual gates organize the local control problem:
 
 | Gate | Meaning | Data-derived rule |
 |---|---|---|
-| G0 | approach observation entry | earliest well-supported upstream section with stable forward baseline motion |
+| G0 | approach observation entry | earliest well-supported section upstream of the detected response |
 | G1 | detectable response onset | first supported section whose Wasserstein distance exceeds the null threshold |
 | G2 | route classification section | midpoint of the stable bimodal core |
 | G3 | analysis exit / recovery observation | last well-supported response section |
 
 If the response remains significant until trajectories leave the well-supported straight section, G3 is an **analysis exit**, not evidence that recovery occurred. The exact values are exported to `config/inferred_geometry.json`.
+
+The effective-splitter line is drawn only over the contiguous **stable core**, not from the earlier response onset. G1 says that trajectories have begun reacting; the core begins only after two separated routes and a low-occupancy gap are established.
 
 For each completed G0-to-G3 passage, the route score is the median
 
@@ -119,21 +121,20 @@ Evaluation is intentionally separate from controller input:
 
 Pair distance is evaluated at 2 Hz. At every timestamp with at least two valid robots in the ROI, the minimum Euclidean center distance is found; the reported metric is the 10th percentile across those minima. Because robot radius is unavailable, this is a spacing proxy, not physical clearance.
 
-The repository also exports the complete per-robot passage-time/path-length table and supporting speed and spacing diagnostics. No frame-level significance test is applied because there is only one run per condition.
+The repository also exports the complete per-robot passage-time/path-length table. No frame-level significance test is applied because there is only one run per condition.
+
+Inner/outer labels are meaningful only after a separator has been inferred from the changed condition. Baseline route shares are therefore marked not applicable and omitted from the route-allocation figure.
 
 ## Generated plots
 
 | File | Purpose |
 |---|---|
-| `01_full_trajectories.png` | raw path overview, identical axes, JSON reference rectangle |
+| `01_full_trajectories.png` | raw path overview, identical axes, nominal route from JSON |
 | `02_inferred_local_geometry.png` | inferred frame, gates, approach, effective separator, routes |
 | `03_wasserstein_profile.png` | response profile, null threshold, supported interval and core |
 | `04_cross_section_kmeans.png` | representative lateral samples and K-means centers |
 | `05_route_distribution.png` | stacked route proportions |
 | `06_passage_time.png` | robot-matched passage-time comparison |
-| `07_online_state.png` | example causal count and quantile state history |
-| `08_spatial_speed_profile.png` | supporting local longitudinal-speed profile |
-| `09_pair_distance.png` | supporting spacing-proxy distribution |
 
 ## Printed and CSV results
 
@@ -145,7 +146,20 @@ The complete CLI prints concise tables for:
 - per-robot passage time and path length;
 - invalid and retained passage counts.
 
-All detailed tables are also saved under `analysis_output/tables`, including section diagnostics, K-means results, G0 events, online state history, passage records, pair-distance samples, and explicit state/metric definition tables.
+Only six reviewable CSV files are saved:
+
+| File | Contents |
+|---|---|
+| `quality_report.csv` | one row per robot JSON |
+| `section_diagnostics.csv` | Wasserstein and K-means evidence by cross-section |
+| `passages.csv` | structured G0-to-G3 passage records |
+| `online_state_summary.csv` | causal 9-component state history |
+| `compact_evaluation.csv` | compact 6-component evaluation |
+| `robot_passage_time.csv` | robot-level timing and path-length summary |
+
+Large aligned-sample, per-timestamp spacing, G0-event, and intermediate crossing tables are intentionally not written. They can be recomputed from the raw JSON when needed. Feature definitions belong in this README and `METHODS.md`, not in additional CSV files.
+
+All figures and result tables use the same presentation order: `baseline` first and `barrier_v01` second. The route-allocation figure is the exception because inner/outer labels are not applicable to the unsplit baseline.
 
 ## Google Colab: complete run
 
@@ -165,6 +179,8 @@ My Drive/
 MP4 files may remain in those folders; the code ignores them.
 
 Run these cells in a fresh Colab notebook.
+
+The data path is supplied explicitly in the command below; the package contains no hard-coded Google Drive path.
 
 **1. Mount Drive**
 
@@ -201,7 +217,7 @@ If the repository already exists in the current Colab runtime:
 ```bash
 !python -m reflow_analysis.analysis_cli \
   --data-root "/content/drive/MyDrive/Roboflow-dataset" \
-  --output-dir "/content/drive/MyDrive/Roboflow-dataset/analysis_output"
+  --output-dir "/content/drive/MyDrive/Roboflow-dataset/analysis_output_compact"
 ```
 
 **5. Display the main figures**
@@ -210,7 +226,7 @@ If the repository already exists in the current Colab runtime:
 from pathlib import Path
 from IPython.display import display, Image
 
-figure_dir = Path("/content/drive/MyDrive/Roboflow-dataset/analysis_output/figures")
+figure_dir = Path("/content/drive/MyDrive/Roboflow-dataset/analysis_output_compact/figures")
 for path in sorted(figure_dir.glob("*.png")):
     print(path.name)
     display(Image(filename=str(path)))
@@ -221,7 +237,7 @@ for path in sorted(figure_dir.glob("*.png")):
 ```python
 import pandas as pd
 
-table_dir = Path("/content/drive/MyDrive/Roboflow-dataset/analysis_output/tables")
+table_dir = Path("/content/drive/MyDrive/Roboflow-dataset/analysis_output_compact/tables")
 display(pd.read_csv(table_dir / "compact_evaluation.csv"))
 display(pd.read_csv(table_dir / "robot_passage_time.csv"))
 display(pd.read_csv(table_dir / "section_diagnostics.csv"))

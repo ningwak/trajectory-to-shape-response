@@ -21,15 +21,7 @@ v(t) = [p(t) - p(t-T)] / T
 
 `valid_kinematics` requires every resampled pose in the complete lag window to be valid. The first lag window of each run is therefore invalid by construction.
 
-After the local frame is inferred:
-
-```text
-forward_motion_valid = valid_kinematics
-                       and v_s > v_min
-                       and |v_d| <= tan(theta_max) v_s
-```
-
-This mask protects crossings and diagnostics from backward or strongly transverse motion. It is not included among the nine policy-state numbers.
+These two masks are retained because they have direct meanings in the preprocessing step. The main analysis does not add a separate `forward_motion_valid` flag: that quantity was not used by the compact state or metrics and would only enlarge the output schema.
 
 ## 3. Response-region localization
 
@@ -45,15 +37,19 @@ For every section `s_j`, forward trajectory crossings are linearly interpolated.
 
 The response statistic is the 1-D Wasserstein distance between baseline and changed lateral samples. A null distribution is produced by repeatedly splitting baseline samples into two random halves. The 95th percentile is the detection threshold.
 
-At each supported section, deterministic 1-D `K=2` K-means is initialized at the first and third quartiles. It is retained when:
+At each supported section, deterministic 1-D `K=2` K-means is initialized at the first and third quartiles. A section belongs to the **stable core** only when:
 
-- both clusters meet minimum sample support;
-- center separation exceeds a minimum physical distance; and
-- mean silhouette exceeds a minimum value.
+- each cluster contains at least three crossings;
+- route-center separation of at least 0.25 m;
+- silhouette of at least 0.55;
+- no more than 20% of crossings in a narrow midpoint gap; and
+- the two changed-condition centers to lie on opposite sides of the baseline median path.
+
+This prevents the early, still-unimodal response region from being drawn as if a separator were already established. Response onset and stable splitter core are therefore different spatial concepts.
 
 K-means is the primary baseline because it is deterministic, transparent, stable for two visibly separated route bands, and needs few parameters. A Gaussian mixture would add unequal variances and probabilistic assignments, but with six robots it is more initialization-sensitive and can overinterpret tails. GMM is therefore more suitable as a later sensitivity analysis than as the interview baseline.
 
-The separator observation at section `s_j` is the midpoint of the two centers. Iterative MAD-based outlier removal followed by a line fit produces the effective separator. The ambiguity half-width is the maximum of a 0.02 m floor, 10% of median cluster separation, and twice the separator-fit RMSE.
+The separator observation at section `s_j` is the midpoint of the two centers. An ordinary least-squares line through the contiguous stable-core midpoints produces the effective separator. For this preliminary dataset, the ambiguity half-width is the larger of 0.02 m and 10% of the median route-center separation. This simple rule is explicit and avoids presenting a more elaborate uncertainty model than the data support.
 
 ## 5. Passage and route logic
 
@@ -76,16 +72,16 @@ Per-robot passage tables are always exported because they expose heterogeneity a
 
 ## 7. Output schema
 
-Key tables:
+The six exported tables are:
 
-- `trajectory_samples.csv`: aligned poses, kinematics, validity masks, and local coordinates;
 - `section_diagnostics.csv`: W1, null threshold, K-means centers/support/separation/silhouette;
-- `section_crossing_samples.csv`: passage-level cross-sectional lateral samples;
 - `passages.csv`: G0-G3 events, labels, duration, length, and rejection reason;
 - `online_state_summary.csv`: 9-component state plus validity metadata;
 - `compact_evaluation.csv`: 6-component outcome vector by condition;
 - `robot_passage_time.csv`: robot-first timing and path-length summaries;
-- `pair_distance_timeseries.csv`: timestamp-wise spacing proxy.
+- `quality_report.csv`: data validity and sampling quality per robot JSON.
+
+Intermediate aligned samples, crossing events, pair-distance samples, and cross-sectional samples remain in memory and are not exported by default. Their definitions are documented here instead of generating schema/definition CSV files.
 
 ## 8. Statistical limitations
 

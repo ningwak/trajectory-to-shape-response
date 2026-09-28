@@ -11,18 +11,17 @@ from .io import build_run_manifest, load_dataset
 from .preprocessing import PreprocessingConfig, preprocess_dataset
 
 
-DEFAULT_COLAB_DATA_ROOT = Path("/content/drive/MyDrive/Roboflow-dataset")
-
-
 def build_parser() -> argparse.ArgumentParser:
+    """Define options for preprocessing without downstream analysis."""
+
     parser = argparse.ArgumentParser(
         description="Load and preprocess the RE-FLOW RoboFlow trajectory dataset."
     )
     parser.add_argument(
         "--data-root",
         type=Path,
-        default=DEFAULT_COLAB_DATA_ROOT,
-        help=f"Directory containing the two raw run folders (default: {DEFAULT_COLAB_DATA_ROOT}).",
+        required=True,
+        help="Directory containing the baseline and barrier run folders.",
     )
     parser.add_argument(
         "--output-dir",
@@ -48,6 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    """Run JSON loading and causal preprocessing as a standalone command."""
+
     args = build_parser().parse_args()
     data_root = args.data_root.expanduser().resolve()
     output_dir = (args.output_dir or data_root / "processed").expanduser().resolve()

@@ -37,15 +37,24 @@ def test_recent_crossings_form_compact_quantile_state():
             "d_g0": [-0.1, 0.0, 0.1],
         }
     )
-    _, events, summary = extract_online_state(
+    summary = extract_online_state(
         trajectories,
         passages,
         AnalysisGeometry(origin_y=0.0),
         OnlineStateConfig(state_rate_hz=2.0, crossing_window_s=15.0),
     )
 
-    assert len(events) == 3
     assert summary["quantiles_valid"].all()
-    assert set(["crossing_count_window", "time_since_last_crossing_s", "n_approach",
-                "v_s_q33_mps", "v_s_q50_mps", "v_s_q67_mps",
-                "d_q33_m", "d_q50_m", "d_q67_m"]).issubset(summary.columns)
+    assert set(
+        [
+            "crossing_count_window",
+            "time_since_last_crossing_s",
+            "n_approach",
+            "v_s_q33_mps",
+            "v_s_q50_mps",
+            "v_s_q67_mps",
+            "d_q33_m",
+            "d_q50_m",
+            "d_q67_m",
+        ]
+    ).issubset(summary.columns)

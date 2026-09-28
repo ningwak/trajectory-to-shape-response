@@ -8,8 +8,7 @@ from typing import Iterable, Literal
 import numpy as np
 import pandas as pd
 
-from .io import RobotTrajectory, RunData
-
+from .io import RobotTrajectory, RunData, sort_by_condition
 
 AlignmentMode = Literal["intersection", "union"]
 
@@ -24,6 +23,8 @@ class PreprocessingConfig:
     alignment: AlignmentMode = "intersection"
 
     def __post_init__(self) -> None:
+        """Validate causal resampling parameters."""
+
         if self.sample_rate_hz <= 0:
             raise ValueError("sample_rate_hz must be positive")
         if self.max_hold_gap_s <= 0:
@@ -34,7 +35,11 @@ class PreprocessingConfig:
             raise ValueError("alignment must be either 'intersection' or 'union'")
 
 
-def _build_time_grid(robots: Iterable[RobotTrajectory], config: PreprocessingConfig) -> pd.DatetimeIndex:
+def _build_time_grid(
+    robots: Iterable[RobotTrajectory], config: PreprocessingConfig
+) -> pd.DatetimeIndex:
+    """Build a regular shared or union time grid for one experiment run."""
+
     robots = tuple(robots)
     starts = [robot.samples["time"].iloc[0] for robot in robots]
     ends = [robot.samples["time"].iloc[-1] for robot in robots]
@@ -48,11 +53,15 @@ def _build_time_grid(robots: Iterable[RobotTrajectory], config: PreprocessingCon
     start = start.ceil(period)
     end = end.floor(period)
     if start >= end:
-        raise ValueError("The selected robot trajectories do not share a usable time interval")
+        raise ValueError(
+            "The selected robot trajectories do not share a usable time interval"
+        )
     return pd.date_range(start=start, end=end, freq=period, tz="UTC")
 
 
 def _wrap_angle(angle: pd.Series) -> pd.Series:
+    """Map an angle series to the interval [-pi, pi]."""
+
     return pd.Series(np.arctan2(np.sin(angle), np.cos(angle)), index=angle.index)
 
 
@@ -131,24 +140,17 @@ def _resample_robot(
 
 
 def _quality_row(robot: RobotTrajectory, aligned: pd.DataFrame) -> dict[str, object]:
+    """Summarize sampling gaps and pose/kinematic validity for one robot."""
+
     raw = robot.samples
     dt = raw["time"].diff().dt.total_seconds()
-    pose_change = (
-        raw[["x", "y", "theta"]].diff().abs().max(axis=1).fillna(np.inf) > 0
-    )
     return {
         "condition": robot.condition,
-        "run_name": robot.run_name,
         "robot_id": robot.robot_id,
-        "source_file": str(robot.source_file),
         "raw_sample_count": len(raw),
-        "raw_pose_update_count": int(pose_change.sum()),
-        "raw_start_time": raw["time"].iloc[0],
-        "raw_end_time": raw["time"].iloc[-1],
         "raw_duration_s": (raw["time"].iloc[-1] - raw["time"].iloc[0]).total_seconds(),
         "raw_median_dt_s": float(dt[dt > 0].median()),
         "raw_max_gap_s": float(dt.max()),
-        "output_sample_count": len(aligned),
         "valid_pose_fraction": float(aligned["valid_pose"].mean()),
         "valid_kinematics_fraction": float(aligned["valid_kinematics"].mean()),
     }
@@ -171,7 +173,9 @@ def preprocess_run(
         quality_rows.append(_quality_row(robot, aligned))
 
     trajectories = pd.concat(aligned_frames, ignore_index=True)
-    trajectories = trajectories.sort_values(["time", "robot_id"], kind="stable").reset_index(drop=True)
+    trajectories = trajectories.sort_values(
+        ["time", "robot_id"], kind="stable"
+    ).reset_index(drop=True)
     quality = pd.DataFrame(quality_rows).sort_values("robot_id").reset_index(drop=True)
     return trajectories, quality
 
@@ -190,7 +194,10 @@ def preprocess_dataset(
         trajectory_frames.append(trajectories)
         quality_frames.append(quality)
 
-    all_trajectories = pd.concat(trajectory_frames, ignore_index=True)
-    all_quality = pd.concat(quality_frames, ignore_index=True)
+    all_trajectories = sort_by_condition(
+        pd.concat(trajectory_frames, ignore_index=True), "time", "robot_id"
+    )
+    all_quality = sort_by_condition(
+        pd.concat(quality_frames, ignore_index=True), "robot_id"
+    )
     return all_trajectories, all_quality
-

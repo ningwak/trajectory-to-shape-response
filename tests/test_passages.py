@@ -5,7 +5,6 @@ import pandas as pd
 from reflow_analysis.geometry import AnalysisGeometry
 from reflow_analysis.passages import PassageConfig, detect_passages
 
-
 GEOMETRY = AnalysisGeometry(
     g0_approach_entry_s=-0.40,
     g1_response_entry_s=-0.20,
@@ -39,7 +38,9 @@ def _trajectory(d_route: float, stop_before_exit: bool = False) -> pd.DataFrame:
 
 
 def test_three_gate_detector_labels_inner_route():
-    passages = detect_passages(_trajectory(-0.15), GEOMETRY, PassageConfig(minimum_core_samples=1))
+    passages = detect_passages(
+        _trajectory(-0.15), GEOMETRY, PassageConfig(minimum_core_samples=1)
+    )
 
     assert len(passages) == 1
     assert bool(passages.loc[0, "valid"])
@@ -48,7 +49,11 @@ def test_three_gate_detector_labels_inner_route():
 
 
 def test_three_gate_detector_retains_incomplete_passage():
-    passages = detect_passages(_trajectory(0.15, stop_before_exit=True), GEOMETRY, PassageConfig(minimum_core_samples=1))
+    passages = detect_passages(
+        _trajectory(0.15, stop_before_exit=True),
+        GEOMETRY,
+        PassageConfig(minimum_core_samples=1),
+    )
 
     assert len(passages) == 1
     assert not bool(passages.loc[0, "valid"])

@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pandas as pd
 
-from .geometry import load_geometry
 from .metrics import MetricConfig
 from .online_state import OnlineStateConfig
 from .passages import PassageConfig
@@ -16,15 +15,14 @@ from .preprocessing import PreprocessingConfig
 from .splitter_inference import SplitterInferenceConfig
 
 
-DEFAULT_COLAB_DATA_ROOT = Path("/content/drive/MyDrive/Roboflow-dataset")
-
-
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Infer an effective splitter and evaluate its flow response.")
-    parser.add_argument("--data-root", type=Path, default=DEFAULT_COLAB_DATA_ROOT)
+    """Define command-line options for the complete compact analysis."""
+
+    parser = argparse.ArgumentParser(
+        description="Infer an effective splitter and evaluate its flow response."
+    )
+    parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, default=None)
-    parser.add_argument("--geometry-config", type=Path, default=None,
-                        help="Optional reproducibility override; default is data-driven inference.")
     parser.add_argument("--sample-rate-hz", type=float, default=20.0)
     parser.add_argument("--max-hold-gap-s", type=float, default=0.25)
     parser.add_argument("--velocity-window-s", type=float, default=0.25)
@@ -35,14 +33,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _print_table(title: str, table: pd.DataFrame, digits: int = 3) -> None:
+    """Print one readable result table with a consistent heading."""
+
     print(f"\n{title}\n{'-' * len(title)}")
     print(table.round(digits).to_string(index=False))
 
 
 def main() -> None:
+    """Run the pipeline and print the small set of interview-relevant results."""
+
     args = build_parser().parse_args()
     data_root = args.data_root.expanduser().resolve()
-    output_dir = (args.output_dir or data_root / "analysis_output").expanduser().resolve()
+    output_dir = (
+        (args.output_dir or data_root / "analysis_output").expanduser().resolve()
+    )
     config = FullAnalysisConfig(
         preprocessing=PreprocessingConfig(
             sample_rate_hz=args.sample_rate_hz,
@@ -56,7 +60,6 @@ def main() -> None:
             state_rate_hz=args.state_rate_hz, crossing_window_s=args.crossing_window_s
         ),
         metrics=MetricConfig(),
-        geometry_override=load_geometry(args.geometry_config) if args.geometry_config else None,
     )
     result = run_full_analysis(data_root, output_dir, config)
     geometry_rows = pd.DataFrame(
@@ -68,20 +71,48 @@ def main() -> None:
             ("core start", result.inference.geometry.core_start_s),
             ("core end", result.inference.geometry.core_end_s),
             ("ambiguity half-width", result.inference.geometry.ambiguous_half_width_m),
-        ], columns=["landmark", "s_or_width_m"]
+        ],
+        columns=["landmark", "s_or_width_m"],
     )
-    _print_table("Data quality", result.quality)
+    _print_table("Data quality", result.quality, digits=4)
     _print_table("Inferred effective splitter and gates", geometry_rows)
     representative = result.inference.section_diagnostics.iloc[
-        (result.inference.section_diagnostics["s"] - result.inference.geometry.g2_route_s).abs().argmin()
-    ][["s", "baseline_n", "changed_n", "wasserstein_m", "null_threshold_m",
-       "cluster_0_center_m", "cluster_1_center_m", "cluster_separation_m",
-       "silhouette", "minimum_cluster_n"]]
-    _print_table("Representative G2 cross-section diagnostic", representative.to_frame().T)
-    _print_table("Compact evaluation (6 numerical entries per condition)", result.evaluation_tables["compact_evaluation"])
-    _print_table("Per-robot passage time and path length", result.evaluation_tables["robot_passage_time"])
-    _print_table("Invalid / retained passage counts", result.evaluation_tables["invalid_passage_summary"])
-    print(f"\nSaved all CSV tables and nine figures to: {output_dir}")
+        (
+            result.inference.section_diagnostics["s"]
+            - result.inference.geometry.g2_route_s
+        )
+        .abs()
+        .argmin()
+    ]
+    diagnostic_columns = [
+        "s",
+        "baseline_n",
+        "changed_n",
+        "wasserstein_m",
+        "null_threshold_m",
+        "cluster_0_center_m",
+        "cluster_1_center_m",
+        "cluster_separation_m",
+        "silhouette",
+        "minimum_cluster_n",
+    ]
+    _print_table(
+        "Representative G2 cross-section diagnostic",
+        pd.DataFrame([{name: representative[name] for name in diagnostic_columns}]),
+    )
+    _print_table(
+        "Compact evaluation (6 numerical entries per condition)",
+        result.evaluation_tables["compact_evaluation"],
+    )
+    _print_table(
+        "Per-robot passage time and path length",
+        result.evaluation_tables["robot_passage_time"],
+    )
+    _print_table(
+        "Invalid / retained passage counts",
+        result.evaluation_tables["invalid_passage_summary"],
+    )
+    print(f"\nSaved six focused CSV tables and six figures to: {output_dir}")
 
 
 if __name__ == "__main__":

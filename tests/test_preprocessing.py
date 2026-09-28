@@ -10,10 +10,16 @@ from reflow_analysis.preprocessing import PreprocessingConfig, preprocess_run
 
 
 def make_robot(robot_id: int, start_offset_s: float = 0.0) -> RobotTrajectory:
-    base = pd.Timestamp("2026-09-03 13:00:00", tz="UTC") + pd.Timedelta(seconds=start_offset_s)
+    base = pd.Timestamp("2026-09-03 13:00:00", tz="UTC") + pd.Timedelta(
+        seconds=start_offset_s
+    )
     samples = pd.DataFrame(
         {
-            "time": [base, base + pd.Timedelta(seconds=0.10), base + pd.Timedelta(seconds=0.20)],
+            "time": [
+                base,
+                base + pd.Timedelta(seconds=0.10),
+                base + pd.Timedelta(seconds=0.20),
+            ],
             "x": [0.0, 0.10, 0.20],
             "y": [0.0, 0.0, 0.0],
             "theta": [0.0, 0.0, 0.0],
@@ -68,8 +74,12 @@ def test_intersection_alignment_and_causal_velocity():
 
     trajectories, quality = preprocess_run(run, config)
 
-    assert trajectories["time"].min() == pd.Timestamp("2026-09-03 13:00:00.05", tz="UTC")
-    assert trajectories["time"].max() == pd.Timestamp("2026-09-03 13:00:00.20", tz="UTC")
+    assert trajectories["time"].min() == pd.Timestamp(
+        "2026-09-03 13:00:00.05", tz="UTC"
+    )
+    assert trajectories["time"].max() == pd.Timestamp(
+        "2026-09-03 13:00:00.20", tz="UTC"
+    )
     assert set(trajectories["robot_id"]) == {20, 24}
     assert quality["valid_pose_fraction"].min() == 1.0
     assert trajectories["valid_kinematics"].any()

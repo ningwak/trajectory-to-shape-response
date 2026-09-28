@@ -20,7 +20,12 @@ def test_load_robot_file_accepts_mixed_timestamp_precision(tmp_path):
         "corridor_width_m": 0.2,
         "trajectory": [
             {"time": "2026-09-03 13:00:00+00:00", "x": 0.0, "y": 0.0, "theta": 0.0},
-            {"time": "2026-09-03 13:00:00.050000+00:00", "x": 0.1, "y": 0.0, "theta": 0.0},
+            {
+                "time": "2026-09-03 13:00:00.050000+00:00",
+                "x": 0.1,
+                "y": 0.0,
+                "theta": 0.0,
+            },
         ],
     }
     path = tmp_path / "R20_test.json"
@@ -32,4 +37,3 @@ def test_load_robot_file_accepts_mixed_timestamp_precision(tmp_path):
     assert robot.condition == "baseline"
     assert str(robot.samples["time"].dt.tz) == "UTC"
     assert len(robot.samples) == 2
-

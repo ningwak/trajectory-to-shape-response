@@ -11,7 +11,6 @@ from typing import Any, Iterable
 
 import pandas as pd
 
-
 REQUIRED_TOP_LEVEL_KEYS = {
     "robot_id",
     "function",
@@ -65,20 +64,39 @@ def infer_condition(run_name: str) -> str:
     return run_name
 
 
+def condition_order(values: Iterable[str]) -> list[str]:
+    """Return condition names with baseline first and changed runs afterwards."""
+
+    return sorted(set(values), key=lambda name: (name != "baseline", name))
+
+
+def sort_by_condition(table: pd.DataFrame, *within_condition: str) -> pd.DataFrame:
+    """Sort a result table as baseline, then barrier, then requested columns."""
+
+    order = {
+        name: index for index, name in enumerate(condition_order(table["condition"]))
+    }
+    return (
+        table.assign(_condition_order=table["condition"].map(order))
+        .sort_values(["_condition_order", *within_condition], kind="stable")
+        .drop(columns="_condition_order")
+        .reset_index(drop=True)
+    )
+
+
 def _parse_utc_timestamps(values: pd.Series, source_file: Path) -> pd.Series:
     """Parse mixed ISO-like timestamps and normalize them to UTC."""
 
     try:
         parsed = pd.to_datetime(values, utc=True, format="mixed", errors="raise")
-    except (TypeError, ValueError):
-        try:
-            parsed = values.map(lambda value: pd.to_datetime(value, utc=True))
-        except Exception as exc:  # pragma: no cover - retains the source path in the error
-            raise ValueError(f"Invalid timestamp in {source_file}: {exc}") from exc
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid timestamp in {source_file}: {exc}") from exc
     return pd.Series(parsed, index=values.index, name="time")
 
 
 def _validate_top_level(payload: dict[str, Any], source_file: Path) -> None:
+    """Check required metadata and ensure that trajectory data are present."""
+
     missing = REQUIRED_TOP_LEVEL_KEYS.difference(payload)
     if missing:
         raise ValueError(f"{source_file} is missing top-level keys: {sorted(missing)}")
@@ -86,14 +104,20 @@ def _validate_top_level(payload: dict[str, Any], source_file: Path) -> None:
         raise ValueError(f"{source_file} contains an empty or invalid trajectory list")
 
 
-def _parse_corners(raw_corners: Iterable[dict[str, Any]], source_file: Path) -> tuple[tuple[float, float], ...]:
+def _parse_corners(
+    raw_corners: Iterable[dict[str, Any]], source_file: Path
+) -> tuple[tuple[float, float], ...]:
+    """Convert the four nominal JSON rectangle corners to numeric tuples."""
+
     corners: list[tuple[float, float]] = []
     for corner in raw_corners:
         if not isinstance(corner, dict) or not {"x", "y"}.issubset(corner):
             raise ValueError(f"Invalid rectangle corner in {source_file}")
         corners.append((float(corner["x"]), float(corner["y"])))
     if len(corners) != 4:
-        raise ValueError(f"Expected four rectangle corners in {source_file}, found {len(corners)}")
+        raise ValueError(
+            f"Expected four rectangle corners in {source_file}, found {len(corners)}"
+        )
     return tuple(corners)
 
 
@@ -109,16 +133,24 @@ def load_robot_file(path: str | Path, condition: str | None = None) -> RobotTraj
     _validate_top_level(payload, source_file)
 
     records = payload["trajectory"]
-    first_missing = [index for index, row in enumerate(records) if not REQUIRED_SAMPLE_KEYS.issubset(row)]
+    first_missing = [
+        index
+        for index, row in enumerate(records)
+        if not REQUIRED_SAMPLE_KEYS.issubset(row)
+    ]
     if first_missing:
-        raise ValueError(f"Trajectory samples are missing required fields in {source_file}; first index: {first_missing[0]}")
+        raise ValueError(
+            f"Trajectory samples are missing required fields in {source_file}; first index: {first_missing[0]}"
+        )
 
     samples = pd.DataFrame.from_records(records, columns=["time", "x", "y", "theta"])
     samples["time"] = _parse_utc_timestamps(samples["time"], source_file)
     for column in ("x", "y", "theta"):
         samples[column] = pd.to_numeric(samples[column], errors="raise").astype(float)
         if not samples[column].map(math.isfinite).all():
-            raise ValueError(f"Non-finite values found in column '{column}' of {source_file}")
+            raise ValueError(
+                f"Non-finite values found in column '{column}' of {source_file}"
+            )
 
     samples = (
         samples.sort_values("time", kind="stable")
@@ -144,6 +176,8 @@ def load_robot_file(path: str | Path, condition: str | None = None) -> RobotTraj
 
 
 def _check_run_consistency(robots: tuple[RobotTrajectory, ...], run_dir: Path) -> None:
+    """Verify that robot files in one directory describe the same experiment."""
+
     robot_ids = [robot.robot_id for robot in robots]
     if len(set(robot_ids)) != len(robot_ids):
         raise ValueError(f"Duplicate robot IDs in {run_dir}: {robot_ids}")
@@ -186,7 +220,9 @@ def discover_run_directories(dataset_root: str | Path) -> tuple[Path, ...]:
 
     root = Path(dataset_root).expanduser().resolve()
     if not root.is_dir():
-        raise FileNotFoundError(f"Dataset root does not exist or is not a directory: {root}")
+        raise FileNotFoundError(
+            f"Dataset root does not exist or is not a directory: {root}"
+        )
     robot_files = (
         path for path in root.rglob("R*.json") if re.match(r"R\d+_", path.name)
     )
@@ -199,7 +235,9 @@ def discover_run_directories(dataset_root: str | Path) -> tuple[Path, ...]:
 def load_dataset(dataset_root: str | Path) -> tuple[RunData, ...]:
     """Discover and load all experiment runs below the dataset root."""
 
-    return tuple(load_run(directory) for directory in discover_run_directories(dataset_root))
+    return tuple(
+        load_run(directory) for directory in discover_run_directories(dataset_root)
+    )
 
 
 def build_run_manifest(runs: Iterable[RunData]) -> pd.DataFrame:
@@ -220,4 +258,4 @@ def build_run_manifest(runs: Iterable[RunData]) -> pd.DataFrame:
                 "rectangle_corners": json.dumps(reference.rectangle_corners),
             }
         )
-    return pd.DataFrame(rows)
+    return sort_by_condition(pd.DataFrame(rows), "run_name")
