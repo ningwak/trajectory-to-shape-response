@@ -4,18 +4,26 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trajectory-to-shape-response"
-version = "0.1.0"
+version = "0.2.0"
 description = "From RoboFlow trajectories to online flow states, shape responses, and geometry-decision support."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "matplotlib>=3.7",
     "numpy>=1.24",
     "pandas>=2.0",
+    "scipy>=1.10",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 parquet = ["pyarrow>=14.0"]
+topology = ["networkx>=3.1", "scikit-image>=0.21"]
+
+[project.scripts]
+reflow-preprocess = "reflow_analysis.cli:main"
+reflow-analyze = "reflow_analysis.analysis_cli:main"
+reflow-topology = "reflow_analysis.path_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,552 +1,290 @@
 # Trajectory to Shape Response
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+A compact, control-oriented analysis pipeline for the RE-FLOW RoboFlow interview dataset. It converts JSON robot trajectories into:
 
-This repository develops a compact and auditable analysis pipeline for the RE-FLOW RoboFlow trajectory dataset. The long-term objective is to connect observed robot motion to decision support for reconfigurable collective geometries:
+1. a data-derived local flow frame and **effective splitter**;
+2. a 9-component causal state that a future shape-decision agent could observe; and
+3. a separate 6-component post-action evaluation vector.
 
-```text
-raw trajectories
-    -> validated and synchronized robot states
-    -> passage events and route responses
-    -> causal online flow-state summaries
-    -> post-action shape evaluation
-    -> state-geometry-response data for future decision models
-```
+The methods are deliberately transparent: causal finite differences, spatial occupancy, 1-D Wasserstein distance, two-cluster cross-sections, virtual-gate events, quantiles, and descriptive robot-level metrics. The current two runs demonstrate state construction and response evaluation; they are not sufficient to train a general geometry-selection policy.
 
-The current implementation covers the first stage: dataset I/O, validation, synchronization, causal resampling, kinematic preprocessing, quality reporting, and a command-line interface. Geometry reconstruction, passage detection, online state extraction, and evaluation metrics are planned as later modules.
+Repository: [ningwak/trajectory-to-shape-response](https://github.com/ningwak/trajectory-to-shape-response)
 
-## Repository
+## Important interpretation rules
 
-- GitHub repository: [`ningwak/trajectory-to-shape-response`](https://github.com/ningwak/trajectory-to-shape-response)
-- Python package: `reflow_analysis`
-- Primary execution environment: Google Colab
-- Raw data location: Google Drive
+- The JSON `rectangle_corners` field is drawn only as a reference rectangle. It is **not** treated as the splitter.
+- `corridor_width_m` is retained as source metadata. Its exact experiment-specific semantics are not documented in the supplied JSON, so it is **not** used to place the splitter.
+- The inferred line is called an **effective trajectory separator**. It estimates the boundary between observed route families; it does not claim to recover the physical barrier pose.
+- MP4 files are not inputs. Every Python discovery path is restricted to files named `R<robot_id>_*.json`; no script discovers, enumerates, opens, or decodes video.
+- Global route topology is optional and outside the main analysis. The main splitter analysis does not assume a rectangle or require global path recognition.
 
-## Current functionality
-
-### 1. Dataset discovery
-
-The loader recursively searches the selected dataset root for experiment directories containing robot files with names matching `R<robot_id>_*.json`.
-
-This restriction prevents generated files such as `processed/preprocessing_config.json` from being mistaken for raw robot trajectories when the pipeline is run repeatedly.
-
-The supplied dataset is expected to contain two experiment directories:
+## Main pipeline
 
 ```text
-Roboflow-dataset/
-├── closed_loop_rectangle_corridor_drive_with_lane_change_20260903T153210_baseline/
-│   ├── R20_....json
-│   ├── R24_....json
-│   ├── R25_....json
-│   ├── R32_....json
-│   ├── R35_....json
-│   ├── R50_....json
-│   └── data_collection_no_barrier.mp4
-└── closed_loop_rectangle_corridor_drive_with_lane_change_20260903T155810_barrier_v01/
-    ├── R20_....json
-    ├── R24_....json
-    ├── R25_....json
-    ├── R32_....json
-    ├── R35_....json
-    ├── R50_....json
-    └── data_collection_with_barrier.mp4
+JSON validation and causal preprocessing
+        -> full-trajectory visual check
+        -> 2-D changed-occupancy region
+        -> baseline local flow frame
+        -> cross-section response and effective splitter
+        -> four virtual gates and structured passages
+        -> causal decision state | post-action evaluation
+        -> printed tables, CSV files, figures, and JSON config
 ```
 
-### 2. JSON loading and validation
+### A. JSON I/O and preprocessing
 
-Each robot file is checked for the following top-level fields:
+The loader validates required metadata and `time, x, y, theta` samples, converts time to UTC, sorts samples, removes duplicate timestamps, and checks within-run consistency. The default preprocessing then:
+
+- aligns robots over their shared time interval;
+- resamples at 20 Hz by causal last-observation hold;
+- marks a pose valid only when the newest past observation is no more than 0.25 s old;
+- estimates `vx`, `vy`, and `omega` with a past-only 0.25 s finite-difference window;
+- marks kinematics valid only when the complete lag window contains valid poses.
+
+`valid_pose`, `valid_kinematics`, and `forward_motion_valid` are quality masks, not learned state features. `forward_motion_valid` requires valid kinematics, positive local longitudinal speed, and a bounded lateral-to-longitudinal velocity ratio.
+
+### B. Full trajectories and local response discovery
+
+`01_full_trajectories.png` draws every robot path for baseline and barrier runs on equal world-coordinate axes. The dashed polygon is the JSON reference rectangle; no splitter is drawn at this stage.
+
+To locate the local response region without video or manual coordinates:
+
+1. each trajectory is resampled by arc length so pauses do not dominate occupancy;
+2. smoothed 2-D occupancy is computed separately for baseline and changed conditions;
+3. the strongest connected baseline-depletion component identifies a candidate response region;
+4. valid baseline velocities in that region determine the local tangent `s`; its left normal defines lateral coordinate `d`.
+
+### C. Effective splitter, approach, and gates
+
+Passage-level lateral crossings are interpolated on a sequence of sections perpendicular to the inferred flow. At each section:
+
+- 1-D Wasserstein distance compares baseline and changed lateral distributions;
+- a baseline-vs-baseline random split supplies a 95% null threshold;
+- deterministic `K=2` 1-D K-means summarizes the two changed-condition route families;
+- minimum cluster support, center separation, silhouette, and section support reject weak sections.
+
+A robust line through valid cluster midpoints gives
 
 ```text
-robot_id
-function
-run_id
-run_timestamp
-rectangle_corners
-corridor_width_m
-trajectory
+d_split(s) = intercept + slope * s
 ```
 
-Each trajectory sample must contain:
+Four virtual gates organize the local control problem:
+
+| Gate | Meaning | Data-derived rule |
+|---|---|---|
+| G0 | approach observation entry | earliest well-supported upstream section with stable forward baseline motion |
+| G1 | detectable response onset | first supported section whose Wasserstein distance exceeds the null threshold |
+| G2 | route classification section | midpoint of the stable bimodal core |
+| G3 | analysis exit / recovery observation | last well-supported response section |
+
+If the response remains significant until trajectories leave the well-supported straight section, G3 is an **analysis exit**, not evidence that recovery occurred. The exact values are exported to `config/inferred_geometry.json`.
+
+For each completed G0-to-G3 passage, the route score is the median
 
 ```text
-time
-x
-y
-theta
+z_i = median[d_i(s) - d_split(s)]
 ```
 
-The loader also:
+over the inferred core. A route is `ambiguous` when the score lies inside the uncertainty band or when signs are insufficiently consistent. Missing core coverage is `unknown` and invalid, not ambiguous.
 
-- parses timestamps with or without fractional seconds;
-- normalizes all timestamps to UTC;
-- converts `x`, `y`, and `theta` to finite floating-point values;
-- sorts samples by timestamp;
-- removes exact duplicate timestamps while retaining the last record;
-- verifies that robot IDs are unique within a run;
-- verifies that experiment function, rectangle geometry, and corridor width are consistent across robots;
-- records the associated MP4 file when exactly one video is present.
+### D. Causal decision state: 9 numerical components
 
-### 3. Condition inference
-
-The experiment condition is inferred from the directory name:
-
-- a name containing `baseline` or `no_barrier` becomes `baseline`;
-- a name containing `barrier_v01` becomes `barrier_v01`;
-- other barrier directories receive a corresponding barrier label.
-
-The original per-robot `run_id` is retained as `source_run_id`. The experiment directory name is used as the shared `run_name`, because the supplied JSON files use different UUIDs for different robots within the same physical experiment.
-
-### 4. Run-level synchronization
-
-Robot recordings do not start and stop at exactly the same time. The default `intersection` alignment keeps only the interval in which every robot in the run has data.
-
-This is important for flow analysis: a robot that has not started logging must not be interpreted as an absent pedestrian or a change in crowd density.
-
-An optional `union` mode is available for diagnostics, but it will naturally contain invalid samples near the beginning or end of some robot recordings.
-
-### 5. Causal resampling
-
-The raw logs are highly irregular. Many timestamps are only milliseconds apart, and the same pose is often recorded repeatedly. The pipeline resamples each robot to a regular 20 Hz grid using causal last-observation-held interpolation.
-
-At grid time `t`, the state is constructed only from the latest raw observation at or before `t`. No future sample is used. This makes the processed trajectory suitable for later online-state extraction.
-
-The default maximum hold duration is 0.25 seconds. If the most recent observation is older than this limit, the pose is marked invalid rather than silently extrapolated.
-
-Repeated poses are retained in the raw trajectory. They provide evidence that a pose remained available and should not be removed as if they were redundant statistical samples.
-
-### 6. Causal velocity estimation
-
-The heading angle is unwrapped internally before angular velocity is calculated. Linear and angular velocities are estimated using a past-only difference window:
+At 2 Hz, the online state uses only current/past observations:
 
 ```text
-vx(t)    = [x(t)     - x(t - T)]     / T
-vy(t)    = [y(t)     - y(t - T)]     / T
-omega(t) = [theta(t) - theta(t - T)] / T
+x_dec(t) = [N_W, delta_t_last, N_approach, q_v(3), q_d(3)]
 ```
 
-The default window is `T = 0.25 s`. This simple estimator is intentionally chosen because it is causal, transparent, robust to high-frequency repeated poses, easy to explain, and sufficient for the first analysis stage.
+| Block | Size | Definition |
+|---|---:|---|
+| `crossing_count_window` | 1 | G0 crossings in the previous 15 s |
+| `time_since_last_crossing_s` | 1 | time since the most recent G0 crossing |
+| `n_approach` | 1 | robots currently between G0 and G1 |
+| `v_s_q33/q50/q67_mps` | 3 | longitudinal-speed quantiles of recent G0 crossings |
+| `d_q33/q50/q67_m` | 3 | lateral-position quantiles of recent G0 crossings |
 
-Velocity values are marked invalid when the full past window does not contain valid poses.
+Quantiles are missing when fewer than three crossings are available, and `crossing_count_window` exposes that support explicitly. The quantiles aggregate agents that crossed the same virtual gate during a recent window; they do not require robots to occupy the gate at the same timestamp.
 
-### 7. Quality reporting
+### E. Post-action evaluation: 6 numerical components
 
-The preprocessing pipeline produces a one-row-per-robot quality report containing:
+Evaluation is intentionally separate from controller input:
 
-- raw sample count;
-- number of actual pose changes;
-- raw start and end times;
-- raw recording duration;
-- median positive timestamp interval;
-- maximum raw timestamp gap;
-- number of aligned output samples;
-- valid-pose fraction;
-- valid-kinematics fraction.
+| Block | Size | Definition |
+|---|---:|---|
+| route proportions | 3 | inner, outer, ambiguous fractions |
+| relative passage time | 1 | condition median G0-to-G3 time divided by baseline median |
+| excess path length | 1 | median path length beyond straight G0-to-G3 distance |
+| lower-tail pair distance | 1 | 10th percentile of timestamp-wise nearest robot-center distance in G1-to-G3 ROI |
 
-This report makes data-cleaning decisions visible and prevents preprocessing assumptions from being hidden inside notebook cells.
+Pair distance is evaluated at 2 Hz. At every timestamp with at least two valid robots in the ROI, the minimum Euclidean center distance is found; the reported metric is the 10th percentile across those minima. Because robot radius is unavailable, this is a spacing proxy, not physical clearance.
 
-### 8. Run manifest
+The repository also exports the complete per-robot passage-time/path-length table and supporting speed and spacing diagnostics. No frame-level significance test is applied because there is only one run per condition.
 
-The run manifest records the condition label, run directory, run name, robot count and IDs, experiment function, corridor width, rectangle corners, and associated video path.
+## Generated plots
 
-### 9. Command-line interface
+| File | Purpose |
+|---|---|
+| `01_full_trajectories.png` | raw path overview, identical axes, JSON reference rectangle |
+| `02_inferred_local_geometry.png` | inferred frame, gates, approach, effective separator, routes |
+| `03_wasserstein_profile.png` | response profile, null threshold, supported interval and core |
+| `04_cross_section_kmeans.png` | representative lateral samples and K-means centers |
+| `05_route_distribution.png` | stacked route proportions |
+| `06_passage_time.png` | robot-matched passage-time comparison |
+| `07_online_state.png` | example causal count and quantile state history |
+| `08_spatial_speed_profile.png` | supporting local longitudinal-speed profile |
+| `09_pair_distance.png` | supporting spacing-proxy distribution |
 
-The complete first-stage pipeline can be run with:
+## Printed and CSV results
+
+The complete CLI prints concise tables for:
+
+- data quality per robot JSON;
+- inferred splitter and gate landmarks;
+- the compact 6-component evaluation;
+- per-robot passage time and path length;
+- invalid and retained passage counts.
+
+All detailed tables are also saved under `analysis_output/tables`, including section diagnostics, K-means results, G0 events, online state history, passage records, pair-distance samples, and explicit state/metric definition tables.
+
+## Google Colab: complete run
+
+The two raw run folders should be stored directly under:
+
+```text
+My Drive/
+└── Roboflow-dataset/
+    ├── closed_loop_..._baseline/
+    │   ├── R20_....json
+    │   └── ...
+    └── closed_loop_..._barrier_v01/
+        ├── R20_....json
+        └── ...
+```
+
+MP4 files may remain in those folders; the code ignores them.
+
+Run these cells in a fresh Colab notebook.
+
+**1. Mount Drive**
+
+```python
+from google.colab import drive
+drive.mount("/content/drive")
+```
+
+**2. Clone and install**
 
 ```bash
-python -m reflow_analysis.cli
+%cd /content
+!git clone https://github.com/ningwak/trajectory-to-shape-response.git
+%cd /content/trajectory-to-shape-response
+!python -m pip install -e ".[dev]"
 ```
 
-Available options are:
+If the repository already exists in the current Colab runtime:
 
-```text
---data-root
---output-dir
---sample-rate-hz
---max-hold-gap-s
---velocity-window-s
---alignment {intersection,union}
---format {csv,parquet}
+```bash
+%cd /content/trajectory-to-shape-response
+!git pull --ff-only
+!python -m pip install -e ".[dev]"
 ```
 
-The defaults are:
+**3. Run tests**
 
-```text
-data root:          /content/drive/MyDrive/Roboflow-dataset
-output directory:   <data-root>/processed
-sample rate:        20 Hz
-maximum hold gap:   0.25 s
-velocity window:    0.25 s
-alignment:          intersection
-output format:      CSV
+```bash
+!python -m pytest -q
 ```
 
-## Code structure
+**4. Run the complete main pipeline**
+
+```bash
+!python -m reflow_analysis.analysis_cli \
+  --data-root "/content/drive/MyDrive/Roboflow-dataset" \
+  --output-dir "/content/drive/MyDrive/Roboflow-dataset/analysis_output"
+```
+
+**5. Display the main figures**
+
+```python
+from pathlib import Path
+from IPython.display import display, Image
+
+figure_dir = Path("/content/drive/MyDrive/Roboflow-dataset/analysis_output/figures")
+for path in sorted(figure_dir.glob("*.png")):
+    print(path.name)
+    display(Image(filename=str(path)))
+```
+
+**6. Inspect exact tables**
+
+```python
+import pandas as pd
+
+table_dir = Path("/content/drive/MyDrive/Roboflow-dataset/analysis_output/tables")
+display(pd.read_csv(table_dir / "compact_evaluation.csv"))
+display(pd.read_csv(table_dir / "robot_passage_time.csv"))
+display(pd.read_csv(table_dir / "section_diagnostics.csv"))
+```
+
+## Optional global path-topology baseline
+
+This baseline is implemented, but the main pipeline does not call it. It makes no rectangle, closed-loop, or fixed-lane assumption:
+
+1. spatially resample baseline paths;
+2. create and smooth an occupancy grid;
+3. threshold and morphologically clean occupied regions;
+4. skeletonize the result;
+5. convert 8-neighbor skeleton pixels into a graph;
+6. prune short leaf spurs;
+7. infer edge direction from nearby velocity votes;
+8. provide distance-plus-heading map matching with an adjacency penalty.
+
+Install and run it separately:
+
+```bash
+!python -m pip install -e ".[topology]"
+!python -m reflow_analysis.path_cli \
+  --data-root "/content/drive/MyDrive/Roboflow-dataset" \
+  --output-dir "/content/drive/MyDrive/Roboflow-dataset/topology_output"
+```
+
+The output contains `topology_nodes.csv`, `topology_edges.csv`, and `topology_graph.png`. This is a baseline interface for more complex scenes, not a prerequisite for splitter inference.
+
+## Repository structure
 
 ```text
 trajectory-to-shape-response/
 ├── README.md
+├── METHODS.md
 ├── pyproject.toml
-├── src/
-│   └── reflow_analysis/
-│       ├── __init__.py
-│       ├── io.py
-│       ├── preprocessing.py
-│       └── cli.py
-├── notebooks/
-│   └── README.md
+├── src/reflow_analysis/
+│   ├── io.py
+│   ├── preprocessing.py
+│   ├── geometry.py
+│   ├── splitter_inference.py
+│   ├── passages.py
+│   ├── online_state.py
+│   ├── metrics.py
+│   ├── plots.py
+│   ├── topology.py
+│   ├── pipeline.py
+│   ├── cli.py
+│   ├── analysis_cli.py
+│   └── path_cli.py
 └── tests/
-    ├── test_io.py
-    └── test_preprocessing.py
 ```
 
-All reusable Python logic is placed in the `reflow_analysis` package. Notebooks should contain only orchestration, exploratory checks, and presentation figures. A function that is reused or affects a reported result should be moved into the package and tested.
+One flat Python package is sufficient at this size. The optional topology code is isolated by module and dependency extra rather than by another directory level.
 
-At the current project size, modules remain at one package level. Additional subpackages such as `reflow_analysis/io/` are unnecessary until a module grows into several files with a clear internal interface.
-
-## Module reference
-
-### `reflow_analysis.io`
-
-#### Data classes
-
-- `RobotTrajectory`: stores one validated robot trajectory and its source metadata.
-- `RunData`: stores all robot trajectories belonging to one experiment directory and its video path.
-
-#### Public functions
-
-- `infer_condition(run_name)`: converts an experiment directory name into a stable condition label.
-- `load_robot_file(path, condition=None)`: loads and validates one robot JSON file.
-- `load_run(run_dir)`: loads all robot files in one experiment directory and checks consistency.
-- `discover_run_directories(dataset_root)`: finds experiment directories below the dataset root.
-- `load_dataset(dataset_root)`: discovers and loads all experiment runs.
-- `build_run_manifest(runs)`: converts run metadata into a compact pandas DataFrame.
-
-### `reflow_analysis.preprocessing`
-
-- `PreprocessingConfig`: stores and validates preprocessing parameters.
-- `preprocess_run(run, config=None)`: synchronizes and preprocesses all robots in one experiment.
-- `preprocess_dataset(runs, config=None)`: preprocesses multiple experiments and concatenates the results.
-
-### `reflow_analysis.cli`
-
-- `build_parser()`: defines command-line arguments and defaults.
-- `main()`: loads data, runs preprocessing, and writes all output files.
-
-## Output files
-
-With the default CSV format, the pipeline writes:
-
-```text
-Roboflow-dataset/processed/
-├── trajectory_samples.csv
-├── quality_report.csv
-├── run_manifest.csv
-└── preprocessing_config.json
-```
-
-### Trajectory table
-
-| Column | Description |
-|---|---|
-| `condition` | Inferred experiment condition, such as `baseline` or `barrier_v01`. |
-| `run_name` | Shared experiment directory name. |
-| `robot_id` | Physical robot identifier. |
-| `source_run_id` | Original UUID stored in the robot JSON file. |
-| `time` | UTC timestamp on the common regular grid. |
-| `elapsed_s` | Time from the beginning of the aligned run interval. |
-| `source_time` | Timestamp of the raw observation held at the current grid time. |
-| `observation_age_s` | Age of the held raw observation. |
-| `x`, `y` | Planar robot position. |
-| `theta` | Wrapped heading angle. |
-| `vx`, `vy` | Causal Cartesian velocity estimate. |
-| `speed` | Magnitude of the Cartesian velocity. |
-| `omega` | Causal angular velocity estimate. |
-| `valid_pose` | Whether a sufficiently recent pose was available. |
-| `valid_kinematics` | Whether the complete past velocity window was valid. |
-
-`quality_report.csv` contains per-robot sampling, gap, output-count, and validity diagnostics. `run_manifest.csv` contains condition, robot, geometry, source-directory, and video metadata. `preprocessing_config.json` records the exact parameters used to generate the processed dataset.
-
-## Complete Google Colab guide
-
-The following instructions are designed for a private GitHub repository and a dataset stored in Google Drive.
-
-### Step 1: Create a GitHub personal access token
-
-For a private repository, create a fine-grained personal access token in GitHub:
-
-1. Open GitHub settings.
-2. Go to **Developer settings**.
-3. Select **Personal access tokens** and **Fine-grained tokens**.
-4. Create a token restricted to `ningwak/trajectory-to-shape-response`.
-5. For cloning and reading, grant **Contents: Read-only** access.
-6. Copy the token when GitHub displays it.
-
-Do not write the token directly into a notebook cell, repository file, or permanent Git remote URL.
-
-### Step 2: Store the token in Colab Secrets
-
-In the Colab notebook:
-
-1. Open the key-shaped **Secrets** panel in the left sidebar.
-2. Add a secret named `GITHUB_TOKEN`.
-3. Paste the token as its value.
-4. Enable notebook access for the secret.
-
-### Step 3: Clone or update the private repository
-
-Run the following as a Python cell. Do not prefix Python statements with `!`.
-
-```python
-from pathlib import Path
-import subprocess
-
-from google.colab import userdata
-
-repo_dir = Path("/content/trajectory-to-shape-response")
-token = userdata.get("GITHUB_TOKEN")
-if not token:
-    raise RuntimeError("GITHUB_TOKEN is missing or notebook access is disabled.")
-
-authenticated_url = (
-    f"https://x-access-token:{token}@github.com/"
-    "ningwak/trajectory-to-shape-response.git"
-)
-
-if repo_dir.exists():
-    result = subprocess.run(
-        ["git", "-C", str(repo_dir), "pull", authenticated_url, "main"],
-        text=True,
-        capture_output=True,
-    )
-else:
-    result = subprocess.run(
-        ["git", "clone", authenticated_url, str(repo_dir)],
-        text=True,
-        capture_output=True,
-    )
-
-if result.returncode != 0:
-    safe_error = result.stderr.replace(token, "***")
-    raise RuntimeError(f"Git operation failed:\n{safe_error}")
-
-# Ensure that the stored remote URL never contains the token.
-subprocess.run(
-    [
-        "git",
-        "-C",
-        str(repo_dir),
-        "remote",
-        "set-url",
-        "origin",
-        "https://github.com/ningwak/trajectory-to-shape-response.git",
-    ],
-    check=True,
-)
-
-del token, authenticated_url
-print(f"Repository ready at: {repo_dir}")
-```
-
-If the repository later becomes public, use:
-
-```python
-!git clone https://github.com/ningwak/trajectory-to-shape-response.git
-```
-
-### Step 4: Mount Google Drive
-
-Run this as a Python cell:
-
-```python
-from google.colab import drive
-
-drive.mount("/content/drive")
-```
-
-Do not write `!from google.colab import drive`. The `!` prefix sends a line to the Linux shell, while `from ... import ...` and `drive.mount(...)` are Python statements.
-
-### Step 5: Verify the dataset path
-
-```python
-from pathlib import Path
-
-data_root = Path("/content/drive/MyDrive/Roboflow-dataset")
-if not data_root.is_dir():
-    raise FileNotFoundError(f"Dataset directory not found: {data_root}")
-
-for path in sorted(data_root.iterdir()):
-    print(path.name)
-```
-
-The output should include the baseline and barrier experiment directories. If the Drive folder has a different name, use that exact spelling in both `data_root` and the command-line arguments below.
-
-### Step 6: Install the repository package
-
-```python
-%cd /content/trajectory-to-shape-response
-```
-
-```python
-%pip install -e ".[dev]"
-```
-
-The editable installation is required because the code uses a `src/` package layout. It makes `reflow_analysis` importable from notebooks and tests.
-
-If `ModuleNotFoundError: No module named 'reflow_analysis'` appears, rerun the installation cell and confirm that the current directory is the repository root.
-
-### Step 7: Run the tests
-
-```python
-!python -m pytest -q
-```
-
-Expected result:
-
-```text
-2 passed
-```
-
-Do not run `python tests/test_io.py` directly. The test files are designed for pytest, and direct execution may bypass package discovery or test fixtures.
-
-### Step 8: Run preprocessing
-
-```python
-!python -m reflow_analysis.cli \
-  --data-root "/content/drive/MyDrive/Roboflow-dataset" \
-  --output-dir "/content/drive/MyDrive/Roboflow-dataset/processed" \
-  --sample-rate-hz 20 \
-  --max-hold-gap-s 0.25 \
-  --velocity-window-s 0.25 \
-  --alignment intersection \
-  --format csv
-```
-
-For the supplied dataset, the current implementation should report two runs, twelve robot files, and approximately 78,834 aligned samples. Small differences are possible if the source files are replaced or modified.
-
-### Step 9: Inspect generated results
-
-```python
-from pathlib import Path
-import pandas as pd
-
-output_dir = Path("/content/drive/MyDrive/Roboflow-dataset/processed")
-
-trajectories = pd.read_csv(
-    output_dir / "trajectory_samples.csv",
-    parse_dates=["time", "source_time"],
-)
-quality = pd.read_csv(
-    output_dir / "quality_report.csv",
-    parse_dates=["raw_start_time", "raw_end_time"],
-)
-manifest = pd.read_csv(output_dir / "run_manifest.csv")
-
-print(trajectories.shape)
-display(quality)
-display(manifest)
-display(trajectories.head())
-```
-
-Check that each condition contains six robots at every aligned timestamp:
-
-```python
-robots_per_time = trajectories.groupby(["condition", "time"])["robot_id"].nunique()
-print(robots_per_time.groupby("condition").agg(["min", "max"]))
-```
-
-With `intersection` alignment, both the minimum and maximum should be six for each condition.
-
-Inspect validity fractions:
-
-```python
-display(
-    quality[
-        [
-            "condition",
-            "robot_id",
-            "raw_sample_count",
-            "raw_pose_update_count",
-            "raw_max_gap_s",
-            "valid_pose_fraction",
-            "valid_kinematics_fraction",
-        ]
-    ]
-)
-```
-
-### Step 10: Use the API from a notebook
-
-```python
-from pathlib import Path
-
-from reflow_analysis.io import build_run_manifest, load_dataset
-from reflow_analysis.preprocessing import PreprocessingConfig, preprocess_dataset
-
-data_root = Path("/content/drive/MyDrive/Roboflow-dataset")
-runs = load_dataset(data_root)
-
-config = PreprocessingConfig(
-    sample_rate_hz=20.0,
-    max_hold_gap_s=0.25,
-    velocity_window_s=0.25,
-    alignment="intersection",
-)
-
-trajectories, quality = preprocess_dataset(runs, config)
-manifest = build_run_manifest(runs)
-```
-
-### Step 11: Optional Parquet output
-
-Parquet files are smaller and preserve data types more reliably than CSV files. Install the optional dependency:
-
-```python
-%pip install -e ".[parquet]"
-```
-
-Then run:
-
-```python
-!python -m reflow_analysis.cli \
-  --data-root "/content/drive/MyDrive/Roboflow-dataset" \
-  --output-dir "/content/drive/MyDrive/Roboflow-dataset/processed_parquet" \
-  --format parquet
-```
-
-## Data and repository safety
-
-The raw dataset and videos are not included in this repository. The `.gitignore` excludes `data/`, `outputs/`, `processed/`, MP4 videos, Parquet outputs, Python caches, and notebook checkpoints.
-
-Before any commit, verify the staged files:
+## Local run
 
 ```bash
-git status
-git diff --cached
-```
-
-Never commit the GitHub personal access token, private dataset, generated data tables, or original videos.
-
-## Tests
-
-`tests/test_io.py` verifies mixed timestamp precision, UTC normalization, and basic robot metadata loading.
-
-`tests/test_preprocessing.py` verifies run-level intersection alignment, causal resampling, synthetic multi-robot synchronization, and valid kinematic output after the past window is available.
-
-Run the full test suite from the repository root:
-
-```bash
+python -m pip install -e ".[dev]"
 python -m pytest -q
+python -m reflow_analysis.analysis_cli \
+  --data-root "/path/to/Roboflow-dataset" \
+  --output-dir "/path/to/analysis_output"
 ```
 
-## Planned analysis modules
-
-The next stages should remain simple, geometry-aware, and easy to audit:
-
-1. `geometry.py`: corridor-aligned coordinates, verified barrier pose, local analysis region, and virtual gates.
-2. `plots.py`: full closed-loop trajectories and local splitter-region views.
-3. `passages.py`: finite-state passage detection and `inner`/`outer`/`ambiguous` route labels.
-4. `online_state.py`: causal per-robot states and coarse rank-based flow summaries.
-5. `metrics.py`: route distribution, local passage time, and spatial speed profiles.
-
-The current baseline and barrier runs are sufficient to validate this feature pipeline and produce preliminary descriptive comparisons. They are not sufficient to train or claim a general geometry-selection policy. Future experiments should vary splitter offset, orientation, length, and activation under repeated comparable flow conditions to build state-geometry-response data.
-
+See [METHODS.md](METHODS.md) for algorithm details, assumptions, failure modes, and the output schema.

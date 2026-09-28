@@ -48,7 +48,6 @@ class RunData:
     run_name: str
     condition: str
     robots: tuple[RobotTrajectory, ...]
-    video_file: Path | None
 
 
 def infer_condition(run_name: str) -> str:
@@ -174,14 +173,11 @@ def load_run(run_dir: str | Path) -> RunData:
     robots = tuple(sorted(robots, key=lambda robot: robot.robot_id))
     _check_run_consistency(robots, directory)
 
-    video_files = sorted(directory.glob("*.mp4"))
-    video_file = video_files[0] if len(video_files) == 1 else None
     return RunData(
         directory=directory,
         run_name=directory.name,
         condition=condition,
         robots=robots,
-        video_file=video_file,
     )
 
 
@@ -222,7 +218,6 @@ def build_run_manifest(runs: Iterable[RunData]) -> pd.DataFrame:
                 "function": reference.function,
                 "corridor_width_m": reference.corridor_width_m,
                 "rectangle_corners": json.dumps(reference.rectangle_corners),
-                "video_file": str(run.video_file) if run.video_file else "",
             }
         )
     return pd.DataFrame(rows)

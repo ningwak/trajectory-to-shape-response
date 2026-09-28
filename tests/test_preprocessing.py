@@ -58,7 +58,6 @@ def test_intersection_alignment_and_causal_velocity():
         run_name="synthetic_baseline",
         condition="baseline",
         robots=(robot_1, robot_2),
-        video_file=None,
     )
     config = PreprocessingConfig(
         sample_rate_hz=20.0,
@@ -74,4 +73,3 @@ def test_intersection_alignment_and_causal_velocity():
     assert set(trajectories["robot_id"]) == {20, 24}
     assert quality["valid_pose_fraction"].min() == 1.0
     assert trajectories["valid_kinematics"].any()
-
