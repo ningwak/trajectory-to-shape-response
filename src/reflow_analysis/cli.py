@@ -11,7 +11,7 @@ from .io import build_run_manifest, load_dataset
 from .preprocessing import PreprocessingConfig, preprocess_dataset
 
 
-DEFAULT_COLAB_DATA_ROOT = Path("/content/drive/MyDrive/Robofow-dataset")
+DEFAULT_COLAB_DATA_ROOT = Path("/content/drive/MyDrive/Roboflow-dataset")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -81,4 +81,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
