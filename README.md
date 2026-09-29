@@ -1,5 +1,11 @@
 # Trajectory to Shape Response
 
+> **Commented study edition.** This copy contains the same executable Python
+> logic as the standard repository, with substantially expanded English
+> comments and docstrings for offline reading. Start with
+> [COMMENTED_REPO_GUIDE.md](COMMENTED_REPO_GUIDE.md), then use
+> [ALGORITHMS_PSEUDOCODE.md](ALGORITHMS_PSEUDOCODE.md) alongside the source.
+
 A compact, control-oriented analysis pipeline for the RE-FLOW RoboFlow interview dataset. It converts JSON robot trajectories into:
 
 1. a data-derived local flow frame and **effective splitter**;
@@ -302,6 +308,7 @@ trajectory-to-shape-response/
 ├── README.md
 ├── METHODS.md
 ├── ALGORITHMS_PSEUDOCODE.md
+├── COMMENTED_REPO_GUIDE.md
 ├── pyproject.toml
 ├── src/reflow_analysis/
 │   ├── io.py

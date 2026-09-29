@@ -1,3 +1,5 @@
+"""Small JSON fixture demonstrating accepted mixed timestamp precision."""
+
 from __future__ import annotations
 
 import json
@@ -6,6 +8,8 @@ from reflow_analysis.io import load_robot_file
 
 
 def test_load_robot_file_accepts_mixed_timestamp_precision(tmp_path):
+    # The first time omits fractional seconds while the second includes them;
+    # both must become timezone-aware UTC timestamps in one ordered table.
     payload = {
         "robot_id": 20,
         "function": "test_run",

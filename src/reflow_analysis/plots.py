@@ -1,4 +1,10 @@
-"""Figures separated from printed/CSV tables for interview use."""
+"""Translate already-computed results into six interview-focused figures.
+
+Plotting is intentionally downstream-only: no function in this module changes
+gate positions, reclassifies a route, or recomputes an evaluation metric.  This
+keeps visual design separate from scientific decisions and makes every plotted
+number traceable to a table or inferred-geometry field.
+"""
 
 from __future__ import annotations
 
@@ -19,7 +25,7 @@ CONDITION_COLORS = {"baseline": "#4472C4", "barrier_v01": "#C00000"}
 
 
 def _save(fig: plt.Figure, path: Path) -> Path:
-    """Save one Matplotlib figure with consistent resolution and trimming."""
+    """Apply the same layout, DPI, bounding-box, and close behaviour to figures."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.tight_layout()
@@ -31,9 +37,16 @@ def _save(fig: plt.Figure, path: Path) -> Path:
 def plot_full_trajectories(
     trajectories: pd.DataFrame, manifest: pd.DataFrame, path: Path
 ) -> Path:
-    """Plot all trajectories and the nominal route boundary stored in JSON."""
+    """Figure 1: world-frame overview with directly comparable panel scales.
+
+    Both conditions use limits computed from the union of all valid trajectories
+    and an equal physical aspect ratio.  A metre therefore has the same visual
+    length in both panels; condition differences cannot be amplified by separate
+    autoscaling.
+    """
 
     conditions = condition_order(trajectories["condition"])
+    # One global bounding box, padded by 4%, is shared by both condition axes.
     valid = trajectories[trajectories["valid_pose"]]
     x_padding = 0.04 * (valid["x"].max() - valid["x"].min())
     y_padding = 0.04 * (valid["y"].max() - valid["y"].min())
@@ -52,6 +65,8 @@ def plot_full_trajectories(
         data = trajectories[
             (trajectories["condition"] == condition) & trajectories["valid_pose"]
         ]
+        # Include run_name in the grouping so a future second run with reused
+        # robot IDs cannot be connected to the first run by one false line.
         for index, ((_, robot_id), group) in enumerate(
             data.groupby(["run_name", "robot_id"], sort=True)
         ):
@@ -63,6 +78,8 @@ def plot_full_trajectories(
                 color=plt.get_cmap("tab10")(index),
                 label=f"R{robot_id}",
             )
+        # The dashed JSON polygon is contextual metadata only.  No later
+        # splitter-inference function reads its plotted coordinates.
         row = manifest[manifest["condition"] == condition].iloc[0]
         corners = np.asarray(json.loads(row["rectangle_corners"]), dtype=float)
         corners = np.vstack([corners, corners[0]])
@@ -94,10 +111,11 @@ def plot_inferred_local_geometry(
     geometry: AnalysisGeometry,
     path: Path,
 ) -> Path:
-    """Show local passages, data-derived gates, and the stable splitter core.
+    """Figure 2: connect passage paths, gates, and the stable separator core.
 
-    Baseline paths are neutral because inner/outer labels only become meaningful
-    after the changed-condition separator has been inferred.
+    The separator is drawn only in the barrier panel and only from core_start to
+    core_end.  Baseline paths are neutral gray because the barrier-derived
+    inner/outer categories are not physically present there.
     """
 
     segments = extract_passage_samples(trajectories, passages, valid_only=True)
@@ -108,6 +126,7 @@ def plot_inferred_local_geometry(
     for col, condition in enumerate(conditions):
         ax = axes[0, col]
         subset = segments[segments["condition"] == condition]
+        # run_name prevents repeated IDs from separate future runs being joined.
         for _, group in subset.groupby(
             ["run_name", "robot_id", "passage_id"], sort=False
         ):
@@ -131,6 +150,8 @@ def plot_inferred_local_geometry(
             (geometry.g3_recovery_s, "G3", "#5B9BD5"),
         ]:
             ax.axvline(gate, ls="--", lw=1, color=color, label=label)
+        # Inner/outer separation is not a physical object in the baseline run,
+        # so the black line and ambiguity band are intentionally barrier-only.
         if condition != "baseline":
             core_s = np.linspace(geometry.core_start_s, geometry.core_end_s, 100)
             ax.plot(
@@ -177,7 +198,12 @@ def plot_inferred_local_geometry(
 def plot_wasserstein_profile(
     diagnostics: pd.DataFrame, geometry: AnalysisGeometry, path: Path
 ) -> Path:
-    """Plot where baseline and changed lateral distributions become different."""
+    """Figure 3: show response detection and stable-core evidence along s.
+
+    W1 above the empirical null indicates a detectable condition response when
+    section support is adequate.  The two shaded intervals distinguish that
+    response from the stricter region used to fit the separator.
+    """
 
     fig, ax = plt.subplots(figsize=(8.2, 4.2))
     ax.plot(
@@ -219,9 +245,16 @@ def plot_wasserstein_profile(
 
 
 def plot_cross_section(result: SplitterInferenceResult, path: Path) -> Path:
-    """Show raw G2 lateral crossings without non-physical vertical jitter."""
+    """Figure 4: show actual lateral crossing samples at the section nearest G2.
+
+    Categorical y positions are exact: all baseline points lie on one row and all
+    barrier points on the other.  No jitter is added because a displaced y value
+    would look like a second physical coordinate.
+    """
 
     geometry, crossings = result.geometry, result.crossing_samples
+    # G2 is derived from a core midpoint and need not equal a floating-point grid
+    # value exactly; select the stored section with minimum absolute difference.
     available_s = np.sort(crossings["s"].unique())
     section_s = float(available_s[np.argmin(np.abs(available_s - geometry.g2_route_s))])
     section = crossings[np.isclose(crossings["s"], section_s)]
@@ -240,6 +273,8 @@ def plot_cross_section(result: SplitterInferenceResult, path: Path) -> Path:
             color=CONDITION_COLORS.get(condition),
             label=condition,
         )
+    # Centers come from barrier samples only.  Their midpoint is the section-wise
+    # separator observation; the black line uses the fitted separator at G2.
     for index, center in enumerate(
         [diag["cluster_0_center_m"], diag["cluster_1_center_m"]]
     ):
@@ -266,7 +301,7 @@ def plot_cross_section(result: SplitterInferenceResult, path: Path) -> Path:
 
 
 def plot_route_distribution(distribution: pd.DataFrame, path: Path) -> Path:
-    """Plot route proportions only for the changed condition.
+    """Figure 5: plot the barrier-only route-composition vector.
 
     Inner/outer labels are defined by the splitter inferred from the changed
     condition. Applying those labels to the unsplit baseline would be visually
@@ -310,8 +345,14 @@ def plot_route_distribution(distribution: pd.DataFrame, path: Path) -> Path:
 
 
 def plot_passage_time(per_robot: pd.DataFrame, path: Path) -> Path:
-    """Compare robot-level median passage times between conditions."""
+    """Figure 6: connect each robot's baseline and barrier median passage time.
 
+    Lines encode paired robot identity, not statistical confidence intervals.
+    Colour and legend avoid overlapping text labels at similar barrier values.
+    """
+
+    # Pivoting gives one row per physical robot and one column per condition, so
+    # every line joins like with like rather than two unrelated condition means.
     pivot = per_robot.pivot_table(
         index="robot_id", columns="condition", values="median_passage_time_s"
     )
@@ -345,7 +386,7 @@ def generate_all_plots(
     inference: SplitterInferenceResult,
     output_dir: Path,
 ) -> dict[str, Path]:
-    """Generate the six figures used by the compact interview analysis."""
+    """Generate the fixed six-figure set with numbered, stable filenames."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
     geometry = inference.geometry

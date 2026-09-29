@@ -1,3 +1,5 @@
+"""Synthetic route and timing records for evaluation-table contracts."""
+
 from __future__ import annotations
 
 import pandas as pd
@@ -7,6 +9,8 @@ from reflow_analysis.metrics import passage_time_tables, route_distribution
 
 
 def test_route_distribution_and_robot_level_passage_aggregation():
+    # One invalid baseline passage verifies that route proportions and timing
+    # aggregates use retained passages rather than every input row.
     passages = pd.DataFrame(
         {
             "condition": ["baseline"] * 4 + ["barrier_v01"] * 4,
@@ -66,6 +70,4 @@ def test_condition_comparison_weights_robots_not_repeated_laps():
     _, condition = passage_time_tables(passages)
     changed = condition[condition["condition"] == "barrier_v01"].iloc[0]
 
-    # Robot 1 changes by 2/1=2; robot 2 changes by 10/10=1.
-    # Their median ratio is 1.5, whereas pooling laps would incorrectly give 2.
     assert changed["relative_passage_time"] == pytest.approx(1.5)

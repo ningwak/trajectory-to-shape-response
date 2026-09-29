@@ -1,3 +1,5 @@
+"""Minimal complete and incomplete trajectories for passage pairing/labels."""
+
 from __future__ import annotations
 
 import pandas as pd
@@ -17,6 +19,8 @@ GEOMETRY = AnalysisGeometry(
 
 
 def _trajectory(d_route: float, stop_before_exit: bool = False) -> pd.DataFrame:
+    # World x equals local s under the default frame and constant world y equals
+    # route offset d, making the expected classification visually transparent.
     s_values = [-0.55, -0.40, -0.10, 0.30, 0.50]
     if stop_before_exit:
         s_values = s_values[:-1]

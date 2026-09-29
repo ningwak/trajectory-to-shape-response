@@ -1,4 +1,13 @@
-"""Load and validate RoboFlow robot trajectory files."""
+"""Discover RoboFlow JSON logs and establish a clean input contract.
+
+The loader is intentionally stricter than a quick ``pandas.read_json`` call.
+Downstream interpolation assumes finite numeric poses, ordered unique times,
+and shared run metadata.  Detecting violations here produces an error tied to
+the source file instead of a difficult-to-explain failure during inference.
+
+File discovery only accepts names matching ``R<digits>_*.json``.  Consequently
+the accompanying MP4 videos are neither enumerated nor opened.
+"""
 
 from __future__ import annotations
 
@@ -25,7 +34,11 @@ REQUIRED_SAMPLE_KEYS = {"time", "x", "y", "theta"}
 
 @dataclass(frozen=True)
 class RobotTrajectory:
-    """One robot trajectory and the metadata stored in its JSON file."""
+    """Validated contents of one robot JSON file.
+
+    ``samples`` contains only the four raw time/pose fields at this stage.
+    Resampling and kinematics are deliberately deferred to ``preprocessing``.
+    """
 
     source_file: Path
     run_name: str
@@ -41,7 +54,7 @@ class RobotTrajectory:
 
 @dataclass(frozen=True)
 class RunData:
-    """All robot files belonging to one experiment directory."""
+    """Robot logs that share one experiment directory and condition."""
 
     directory: Path
     run_name: str
@@ -50,7 +63,11 @@ class RunData:
 
 
 def infer_condition(run_name: str) -> str:
-    """Infer a stable condition label from an experiment directory name."""
+    """Map verbose run-directory names to stable comparison labels.
+
+    The explicit baseline check precedes the generic barrier check so a name
+    such as ``no_barrier`` cannot accidentally become the changed condition.
+    """
 
     name = run_name.lower()
     if "baseline" in name or "no_barrier" in name:
@@ -65,13 +82,18 @@ def infer_condition(run_name: str) -> str:
 
 
 def condition_order(values: Iterable[str]) -> list[str]:
-    """Return condition names with baseline first and changed runs afterwards."""
+    """Return a presentation order with baseline before changed conditions."""
 
     return sorted(set(values), key=lambda name: (name != "baseline", name))
 
 
 def sort_by_condition(table: pd.DataFrame, *within_condition: str) -> pd.DataFrame:
-    """Sort a result table as baseline, then barrier, then requested columns."""
+    """Apply the same baseline-first order to every printed/exported table.
+
+    A temporary integer rank is used instead of converting the public condition
+    column to a pandas categorical type.  The returned schema therefore stays
+    simple when written to CSV.
+    """
 
     order = {
         name: index for index, name in enumerate(condition_order(table["condition"]))
@@ -85,7 +107,12 @@ def sort_by_condition(table: pd.DataFrame, *within_condition: str) -> pd.DataFra
 
 
 def _parse_utc_timestamps(values: pd.Series, source_file: Path) -> pd.Series:
-    """Parse mixed ISO-like timestamps and normalize them to UTC."""
+    """Parse mixed ISO timestamp precision and normalize all values to UTC.
+
+    The two experiment files may contain fractional seconds with different
+    displayed precision.  ``format='mixed'`` permits that formatting variation;
+    ``errors='raise'`` still rejects an actually invalid timestamp.
+    """
 
     try:
         parsed = pd.to_datetime(values, utc=True, format="mixed", errors="raise")
@@ -95,7 +122,7 @@ def _parse_utc_timestamps(values: pd.Series, source_file: Path) -> pd.Series:
 
 
 def _validate_top_level(payload: dict[str, Any], source_file: Path) -> None:
-    """Check required metadata and ensure that trajectory data are present."""
+    """Check the small set of JSON fields used or retained by this repository."""
 
     missing = REQUIRED_TOP_LEVEL_KEYS.difference(payload)
     if missing:
@@ -107,7 +134,11 @@ def _validate_top_level(payload: dict[str, Any], source_file: Path) -> None:
 def _parse_corners(
     raw_corners: Iterable[dict[str, Any]], source_file: Path
 ) -> tuple[tuple[float, float], ...]:
-    """Convert the four nominal JSON rectangle corners to numeric tuples."""
+    """Convert the nominal route boundary to four numeric coordinate pairs.
+
+    These corners are retained for Figure 1 only.  They are never interpreted
+    as the physical splitter position.
+    """
 
     corners: list[tuple[float, float]] = []
     for corner in raw_corners:
@@ -122,7 +153,7 @@ def _parse_corners(
 
 
 def load_robot_file(path: str | Path, condition: str | None = None) -> RobotTrajectory:
-    """Load one JSON file into a validated, time-sorted trajectory object."""
+    """Load, validate, type-convert, and time-order one robot trajectory."""
 
     source_file = Path(path).expanduser().resolve()
     with source_file.open("r", encoding="utf-8") as file:
@@ -132,6 +163,8 @@ def load_robot_file(path: str | Path, condition: str | None = None) -> RobotTraj
         raise ValueError(f"Expected a JSON object in {source_file}")
     _validate_top_level(payload, source_file)
 
+    # Validate record structure before DataFrame construction; otherwise a
+    # missing field can silently become a mostly-NaN column.
     records = payload["trajectory"]
     first_missing = [
         index
@@ -145,6 +178,8 @@ def load_robot_file(path: str | Path, condition: str | None = None) -> RobotTraj
 
     samples = pd.DataFrame.from_records(records, columns=["time", "x", "y", "theta"])
     samples["time"] = _parse_utc_timestamps(samples["time"], source_file)
+    # Numeric coercion plus an explicit finite check rejects strings, infinity,
+    # and NaN before they enter distance or interpolation calculations.
     for column in ("x", "y", "theta"):
         samples[column] = pd.to_numeric(samples[column], errors="raise").astype(float)
         if not samples[column].map(math.isfinite).all():
@@ -152,6 +187,8 @@ def load_robot_file(path: str | Path, condition: str | None = None) -> RobotTraj
                 f"Non-finite values found in column '{column}' of {source_file}"
             )
 
+    # Stable sorting preserves source order among equal timestamps; keeping the
+    # last duplicate then gives one unambiguous pose per source time.
     samples = (
         samples.sort_values("time", kind="stable")
         .drop_duplicates(subset="time", keep="last")
@@ -176,7 +213,7 @@ def load_robot_file(path: str | Path, condition: str | None = None) -> RobotTraj
 
 
 def _check_run_consistency(robots: tuple[RobotTrajectory, ...], run_dir: Path) -> None:
-    """Verify that robot files in one directory describe the same experiment."""
+    """Verify metadata assumptions needed to treat files as one shared run."""
 
     robot_ids = [robot.robot_id for robot in robots]
     if len(set(robot_ids)) != len(robot_ids):
@@ -193,7 +230,7 @@ def _check_run_consistency(robots: tuple[RobotTrajectory, ...], run_dir: Path) -
 
 
 def load_run(run_dir: str | Path) -> RunData:
-    """Load every robot JSON file in one experiment directory."""
+    """Load every matching robot JSON in one directory and sort by robot ID."""
 
     directory = Path(run_dir).expanduser().resolve()
     json_files = sorted(
@@ -216,7 +253,7 @@ def load_run(run_dir: str | Path) -> RunData:
 
 
 def discover_run_directories(dataset_root: str | Path) -> tuple[Path, ...]:
-    """Find directories containing robot JSON files below the dataset root."""
+    """Find run directories recursively while ignoring all non-robot files."""
 
     root = Path(dataset_root).expanduser().resolve()
     if not root.is_dir():
@@ -233,7 +270,7 @@ def discover_run_directories(dataset_root: str | Path) -> tuple[Path, ...]:
 
 
 def load_dataset(dataset_root: str | Path) -> tuple[RunData, ...]:
-    """Discover and load all experiment runs below the dataset root."""
+    """Compose directory discovery and per-run loading for the complete dataset."""
 
     return tuple(
         load_run(directory) for directory in discover_run_directories(dataset_root)
@@ -241,7 +278,11 @@ def load_dataset(dataset_root: str | Path) -> tuple[RunData, ...]:
 
 
 def build_run_manifest(runs: Iterable[RunData]) -> pd.DataFrame:
-    """Create a compact table describing the discovered experiment runs."""
+    """Create one metadata row per run for plotting and notebook inspection.
+
+    The manifest is not one of the six exported scientific result tables.  Its
+    main pipeline use is to supply the nominal JSON route boundary to Figure 1.
+    """
 
     rows: list[dict[str, Any]] = []
     for run in runs:
