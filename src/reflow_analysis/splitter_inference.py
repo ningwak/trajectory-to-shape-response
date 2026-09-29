@@ -26,6 +26,8 @@ class SplitterInferenceConfig:
     minimum_core_separation_m: float = 0.25
     minimum_core_silhouette: float = 0.55
     maximum_core_gap_fraction: float = 0.20
+    section_upstream_margin_m: float = 0.45
+    section_downstream_margin_m: float = 0.25
     null_bootstrap_repeats: int = 100
     null_quantile: float = 0.95
     random_seed: int = 7
@@ -243,36 +245,50 @@ def _interpolate_sections(
 
 
 def _kmeans_1d(values: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
-    """Fit deterministic two-cluster K-means to one lateral cross-section.
+    """Fit the globally optimal two-cluster K-means split in one dimension.
 
     K=2 is used as a transparent baseline because the physical hypothesis is
-    specifically two routes around one splitter. Quartile initialization makes
-    repeated runs deterministic and avoids an additional machine-learning
-    dependency for this small dataset.
+    specifically two routes around one splitter. In one dimension, every
+    K-means solution is a split of the sorted samples. Enumerating those splits
+    is deterministic and avoids the local minima of Lloyd iteration.
     """
 
     values = np.asarray(values, dtype=float)
-    centers = np.quantile(values, [0.25, 0.75])
-    labels_ = np.zeros(len(values), dtype=int)
-    for _ in range(50):
-        labels_ = np.argmin(np.abs(values[:, None] - centers[None, :]), axis=1)
-        if len(np.unique(labels_)) < 2:
-            break
-        updated = np.array([values[labels_ == index].mean() for index in (0, 1)])
-        if np.allclose(updated, centers):
-            centers = updated
-            break
-        centers = updated
-    order = np.argsort(centers)
-    remap = np.zeros(2, dtype=int)
-    remap[order] = np.arange(2)
-    labels_ = remap[labels_]
-    centers = centers[order]
+    if len(values) < 2 or not np.isfinite(values).all():
+        raise ValueError("1-D K-means needs at least two finite values")
+
+    order = np.argsort(values, kind="stable")
+    sorted_values = values[order]
+    best_sse = np.inf
+    best_split = 1
+    best_centers = np.array([sorted_values[0], sorted_values[1]])
+    for split in range(1, len(sorted_values)):
+        left, right = sorted_values[:split], sorted_values[split:]
+        centers = np.array([left.mean(), right.mean()])
+        sse = float(
+            np.sum((left - centers[0]) ** 2) + np.sum((right - centers[1]) ** 2)
+        )
+        if sse < best_sse:
+            best_sse = sse
+            best_split = split
+            best_centers = centers
+
+    sorted_labels = np.r_[
+        np.zeros(best_split, dtype=int),
+        np.ones(len(sorted_values) - best_split, dtype=int),
+    ]
+    labels_ = np.empty(len(values), dtype=int)
+    labels_[order] = sorted_labels
+    centers = best_centers
     silhouettes = []
     for index, value in enumerate(values):
-        same = values[labels_ == labels_[index]]
+        same_indices = np.flatnonzero(labels_ == labels_[index])
+        same = values[same_indices[same_indices != index]]
         other = values[labels_ != labels_[index]]
-        a = np.mean(np.abs(same - value)) if len(same) > 1 else 0.0
+        if not len(same):
+            silhouettes.append(0.0)
+            continue
+        a = np.mean(np.abs(same - value))
         b = np.mean(np.abs(other - value)) if len(other) else np.nan
         silhouettes.append(
             (b - a) / max(a, b) if np.isfinite(b) and max(a, b) > 0 else 0.0
@@ -351,8 +367,8 @@ def infer_effective_splitter(
     component_s = (component["x"] - origin[0]) * tangent[0] + (
         component["y"] - origin[1]
     ) * tangent[1]
-    grid_min = float(component_s.min() - 0.45)
-    grid_max = float(component_s.max() + 0.25)
+    grid_min = float(component_s.min() - config.section_upstream_margin_m)
+    grid_max = float(component_s.max() + config.section_downstream_margin_m)
     s_grid = np.arange(
         grid_min, grid_max + config.section_step_m / 2, config.section_step_m
     )

@@ -60,10 +60,12 @@ Passage-level lateral crossings are interpolated on a sequence of sections perpe
 
 - 1-D Wasserstein distance compares baseline and changed lateral distributions;
 - a baseline-vs-baseline random split supplies a 95% null threshold;
-- deterministic `K=2` 1-D K-means summarizes the two changed-condition route families;
+- exact `K=2` 1-D K-means enumerates sorted split points and selects the global minimum-SSE partition;
 - the stable splitter core requires at least three samples per route, at least 0.25 m center separation, silhouette at least 0.55, a depleted midpoint gap, and centers on opposite sides of the baseline median path.
 
-A robust line through valid cluster midpoints gives
+Silhouette follows its standard definition: a sample is excluded from its own
+within-cluster distance. An ordinary least-squares line through valid cluster
+midpoints gives
 
 ```text
 d_split(s) = intercept + slope * s
@@ -80,6 +82,11 @@ Four virtual gates organize the local control problem:
 
 If the response remains significant until trajectories leave the well-supported straight section, G3 is an **analysis exit**, not evidence that recovery occurred. The exact values are exported to `config/inferred_geometry.json`.
 
+G0 is an observation boundary, not a detected turning instant. Its search grid
+extends a configurable distance upstream of the occupancy-response component,
+after which the earliest adequately supported section is selected. The method
+does not use a rule such as `|v_d| > |v_s|` to define approach onset.
+
 The effective-splitter line is drawn only over the contiguous **stable core**, not from the earlier response onset. G1 says that trajectories have begun reacting; the core begins only after two separated routes and a low-occupancy gap are established.
 
 For each completed G0-to-G3 passage, the route score is the median
@@ -89,6 +96,17 @@ z_i = median[d_i(s) - d_split(s)]
 ```
 
 over the inferred core. A route is `ambiguous` when the score lies inside the uncertainty band or when signs are insufficiently consistent. Missing core coverage is `unknown` and invalid, not ambiguous.
+
+Passages are paired by a small chronological state machine. A new G0 replaces
+an older unmatched G0, preventing one missed G3 in a closed-loop run from
+shifting every later lap. Replaced entries remain visible with the reason
+`superseded_by_next_G0`. Completed path length starts and ends at the linearly
+interpolated G0/G3 positions rather than at the nearest grid samples.
+
+For this experiment, negative separator offset is named `inner` and positive
+offset `outer`. This name relies on the observed direction around the supplied
+loop; a general scene should first infer inward orientation or retain neutral
+negative-side/positive-side labels.
 
 ### D. Causal decision state: 9 numerical components
 
@@ -108,6 +126,11 @@ x_dec(t) = [N_W, delta_t_last, N_approach, q_v(3), q_d(3)]
 
 Quantiles are missing when fewer than three crossings are available, and `crossing_count_window` exposes that support explicitly. The quantiles aggregate agents that crossed the same virtual gate during a recent window; they do not require robots to occupy the gate at the same timestamp.
 
+An interpolated crossing becomes observable when its following 20 Hz sample
+arrives. Because state timestamps are a subset of that same regular grid, the
+crossing sample is always available by the first state update that uses it;
+future passage completion and route labels are never used.
+
 ### E. Post-action evaluation: 6 numerical components
 
 Evaluation is intentionally separate from controller input:
@@ -115,13 +138,18 @@ Evaluation is intentionally separate from controller input:
 | Block | Size | Definition |
 |---|---:|---|
 | route proportions | 3 | inner, outer, ambiguous fractions |
-| relative passage time | 1 | condition median G0-to-G3 time divided by baseline median |
-| excess path length | 1 | median path length beyond straight G0-to-G3 distance |
+| relative passage time | 1 | median across robots of each robot's barrier/baseline median-time ratio |
+| excess path length | 1 | median across robot-level median excess path lengths |
 | lower-tail pair distance | 1 | 10th percentile of timestamp-wise nearest robot-center distance in G1-to-G3 ROI |
 
 Pair distance is evaluated at 2 Hz. At every timestamp with at least two valid robots in the ROI, the minimum Euclidean center distance is found; the reported metric is the 10th percentile across those minima. Because robot radius is unavailable, this is a spacing proxy, not physical clearance.
 
-The repository also exports the complete per-robot passage-time/path-length table. No frame-level significance test is applied because there is only one run per condition.
+Repeated laps are first summarized within each robot. Condition summaries then
+take medians across robots, so a robot with more completed laps does not receive
+more weight. Relative passage time is matched by `robot_id` across conditions.
+The repository also exports the complete per-robot passage-time/path-length
+table. No frame-level significance test is applied because there is only one
+run per condition.
 
 Inner/outer labels are meaningful only after a separator has been inferred from the changed condition. Baseline route shares are therefore marked not applicable and omitted from the route-allocation figure.
 
@@ -130,7 +158,7 @@ Inner/outer labels are meaningful only after a separator has been inferred from 
 | File | Purpose |
 |---|---|
 | `01_full_trajectories.png` | raw path overview, identical axes, nominal route from JSON |
-| `02_inferred_local_geometry.png` | inferred frame, gates, approach, effective separator, routes |
+| `02_inferred_local_geometry.png` | inferred frame, gates, approach and barrier routes; baseline paths are neutral gray |
 | `03_wasserstein_profile.png` | response profile, null threshold, supported interval and core |
 | `04_cross_section_kmeans.png` | representative lateral samples and K-means centers |
 | `05_route_distribution.png` | stacked route proportions |
@@ -273,6 +301,7 @@ The output contains `topology_nodes.csv`, `topology_edges.csv`, and `topology_gr
 trajectory-to-shape-response/
 ├── README.md
 ├── METHODS.md
+├── ALGORITHMS_PSEUDOCODE.md
 ├── pyproject.toml
 ├── src/reflow_analysis/
 │   ├── io.py
@@ -303,4 +332,7 @@ python -m reflow_analysis.analysis_cli \
   --output-dir "/path/to/analysis_output"
 ```
 
-See [METHODS.md](METHODS.md) for algorithm details, assumptions, failure modes, and the output schema.
+See [METHODS.md](METHODS.md) for assumptions, failure modes, and the output
+schema. See [ALGORITHMS_PSEUDOCODE.md](ALGORITHMS_PSEUDOCODE.md) for
+implementation-aligned pseudocode covering the main pipeline and the optional
+global topology baseline.

@@ -37,7 +37,7 @@ For every section `s_j`, forward trajectory crossings are linearly interpolated.
 
 The response statistic is the 1-D Wasserstein distance between baseline and changed lateral samples. A null distribution is produced by repeatedly splitting baseline samples into two random halves. The 95th percentile is the detection threshold.
 
-At each supported section, deterministic 1-D `K=2` K-means is initialized at the first and third quartiles. A section belongs to the **stable core** only when:
+At each supported section, exact 1-D `K=2` K-means sorts the samples, enumerates every non-empty split point, and selects the partition with minimum within-cluster squared error. This is deterministic and, unlike initialized Lloyd iteration, cannot stop at a local minimum. Silhouette excludes each sample from its own within-cluster distance. A section belongs to the **stable core** only when:
 
 - each cluster contains at least three crossings;
 - route-center separation of at least 0.25 m;
@@ -47,13 +47,18 @@ At each supported section, deterministic 1-D `K=2` K-means is initialized at the
 
 This prevents the early, still-unimodal response region from being drawn as if a separator were already established. Response onset and stable splitter core are therefore different spatial concepts.
 
-K-means is the primary baseline because it is deterministic, transparent, stable for two visibly separated route bands, and needs few parameters. A Gaussian mixture would add unequal variances and probabilistic assignments, but with six robots it is more initialization-sensitive and can overinterpret tails. GMM is therefore more suitable as a later sensitivity analysis than as the interview baseline.
+K-means is the primary baseline because the exact one-dimensional solution is deterministic, transparent, stable for two visibly separated route bands, and needs few parameters. A Gaussian mixture would add unequal variances and probabilistic assignments, but with six robots it is more initialization-sensitive and can overinterpret tails. GMM is therefore more suitable as a later sensitivity analysis than as the interview baseline.
 
 The separator observation at section `s_j` is the midpoint of the two centers. An ordinary least-squares line through the contiguous stable-core midpoints produces the effective separator. For this preliminary dataset, the ambiguity half-width is the larger of 0.02 m and 10% of the median route-center separation. This simple rule is explicit and avoids presenting a more elaborate uncertainty model than the data support.
 
+G0 is the earliest adequately supported section on a grid extended upstream of
+the response component by `section_upstream_margin_m`; it is an observation
+boundary, not a claim that turning begins there. G3 is the last supported
+response section and is reported as an analysis exit when recovery is not seen.
+
 ## 5. Passage and route logic
 
-A passage begins at a forward G0 crossing and ends at the next forward G3 crossing. It is invalid when G3 is absent, duration is out of range, or the inferred core has insufficient samples.
+A passage begins at a forward G0 crossing and ends at the next forward G3 crossing. Pairing uses an event state machine: if another G0 appears before an exit, the older unmatched entry is retained as invalid with `superseded_by_next_G0`, and the newer G0 becomes active. This prevents a missing exit on one closed-loop lap from shifting every later pair. A passage is also invalid when G3 is absent, duration is out of range, or the inferred core has insufficient samples. Completed path length includes the interpolated G0 and G3 positions rather than approximating them by adjacent samples.
 
 Route classification uses the full core, not a single instantaneous lateral coordinate. Let
 
@@ -62,13 +67,13 @@ r_i(s) = d_i(s) - d_split(s)
 z_i    = median r_i(s)
 ```
 
-Then `z_i < -epsilon` is inner, `z_i > epsilon` is outer, and `|z_i| <= epsilon` is ambiguous. A passage is also ambiguous when fewer than 70% of core samples agree in sign. This reduces sensitivity to noise at one gate.
+Then `z_i < -epsilon` is inner, `z_i > epsilon` is outer, and `|z_i| <= epsilon` is ambiguous. A passage is also ambiguous when fewer than 70% of core samples agree in sign. This reduces sensitivity to noise at one gate. The inner/outer names are a convention for the observed loop direction; in a general path, the two signs should remain neutral side labels until inward orientation is known.
 
 ## 6. Compact states and metrics
 
 The decision state has three scalars and two 3-vectors, totaling nine numerical components. The evaluation vector has one 3-vector and three scalars, totaling six. Highly correlated alternatives are left in supporting tables rather than added to the core vectors.
 
-Per-robot passage tables are always exported because they expose heterogeneity and make the small effective sample size explicit.
+Per-robot passage tables are always exported because they expose heterogeneity and make the small effective sample size explicit. Repeated laps are summarized within robot first. Relative passage time is computed within matched robot IDs across conditions and then summarized across robots; excess length is likewise summarized from robot-level medians. This prevents robots with more retained laps from receiving extra weight.
 
 ## 7. Output schema
 

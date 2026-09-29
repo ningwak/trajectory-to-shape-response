@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from reflow_analysis.metrics import passage_time_tables, route_distribution
 
@@ -45,3 +46,26 @@ def test_route_distribution_and_robot_level_passage_aggregation():
         condition.loc[condition["condition"] == "barrier_v01", "valid_passages"].iloc[0]
         == 4
     )
+
+
+def test_condition_comparison_weights_robots_not_repeated_laps():
+    passages = pd.DataFrame(
+        {
+            "condition": ["baseline"] * 5 + ["barrier_v01"] * 5,
+            "run_name": ["base"] * 5 + ["changed"] * 5,
+            "robot_id": [1, 1, 1, 1, 2, 1, 1, 1, 1, 2],
+            "valid": [True] * 10,
+            "route_label": ["inner"] * 10,
+            "passage_time_s": [1, 1, 1, 1, 10, 2, 2, 2, 2, 10],
+            "path_length_m": [1.0] * 10,
+            "excess_path_length_m": [0.1] * 10,
+            "passage_id": range(10),
+        }
+    )
+
+    _, condition = passage_time_tables(passages)
+    changed = condition[condition["condition"] == "barrier_v01"].iloc[0]
+
+    # Robot 1 changes by 2/1=2; robot 2 changes by 10/10=1.
+    # Their median ratio is 1.5, whereas pooling laps would incorrectly give 2.
+    assert changed["relative_passage_time"] == pytest.approx(1.5)

@@ -52,7 +52,9 @@ def plot_full_trajectories(
         data = trajectories[
             (trajectories["condition"] == condition) & trajectories["valid_pose"]
         ]
-        for index, (robot_id, group) in enumerate(data.groupby("robot_id", sort=True)):
+        for index, ((_, robot_id), group) in enumerate(
+            data.groupby(["run_name", "robot_id"], sort=True)
+        ):
             ax.plot(
                 group["x"],
                 group["y"],
@@ -92,7 +94,11 @@ def plot_inferred_local_geometry(
     geometry: AnalysisGeometry,
     path: Path,
 ) -> Path:
-    """Show local passages, data-derived gates, and only the stable splitter core."""
+    """Show local passages, data-derived gates, and the stable splitter core.
+
+    Baseline paths are neutral because inner/outer labels only become meaningful
+    after the changed-condition separator has been inferred.
+    """
 
     segments = extract_passage_samples(trajectories, passages, valid_only=True)
     conditions = condition_order(trajectories["condition"])
@@ -102,12 +108,19 @@ def plot_inferred_local_geometry(
     for col, condition in enumerate(conditions):
         ax = axes[0, col]
         subset = segments[segments["condition"] == condition]
-        for _, group in subset.groupby(["robot_id", "passage_id"], sort=False):
+        for _, group in subset.groupby(
+            ["run_name", "robot_id", "passage_id"], sort=False
+        ):
             route = group["route_label"].iloc[0]
+            color = (
+                "#888888"
+                if condition == "baseline"
+                else ROUTE_COLORS.get(route, "#aaaaaa")
+            )
             ax.plot(
                 group["s"],
                 group["d"],
-                color=ROUTE_COLORS.get(route, "#aaaaaa"),
+                color=color,
                 alpha=0.30,
                 lw=0.8,
             )

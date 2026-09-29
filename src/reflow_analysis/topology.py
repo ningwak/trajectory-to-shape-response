@@ -219,6 +219,7 @@ def map_match_trajectory(
     )
     positions = nodes[["x", "y"]].to_numpy(float)
     node_ids = nodes["node_id"].to_numpy(int)
+    position_by_id = dict(zip(node_ids, positions))
     for row, candidates in enumerate(indices):
         costs = distances[row].astype(float)
         if previous is not None:
@@ -240,9 +241,7 @@ def map_match_trajectory(
                 successors = list(topology.graph.successors(node))
                 if successors:
                     tangents = [
-                        positions[nodes.index[nodes.node_id == nxt][0]]
-                        - positions[index]
-                        for nxt in successors
+                        position_by_id[nxt] - positions[index] for nxt in successors
                     ]
                     alignment = max(
                         np.dot(direction, tangent / np.linalg.norm(tangent))

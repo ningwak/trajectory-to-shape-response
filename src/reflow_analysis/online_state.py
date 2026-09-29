@@ -32,7 +32,12 @@ def _downsample_run(run: pd.DataFrame, rate_hz: float) -> pd.DataFrame:
 
 
 def _nearest_value(group: pd.DataFrame, time: pd.Timestamp, column: str) -> float:
-    """Read a valid kinematic value nearest to an interpolated gate crossing."""
+    """Read the closest valid value for a crossing confirmed on the same grid.
+
+    The first state timestamp that can include an interpolated crossing is never
+    earlier than the following 20 Hz sample, so this lookup does not add future
+    information to the returned state history.
+    """
 
     index = (group["time"] - time).abs().idxmin()
     row = group.loc[index]

@@ -44,6 +44,14 @@ def _crossings(
                 "time": t0 + (t1 - t0) * alpha,
                 "index": int(index + 1),
                 "d": float(d_cross),
+                "x": float(
+                    group.iloc[index]["x"]
+                    + alpha * (group.iloc[index + 1]["x"] - group.iloc[index]["x"])
+                ),
+                "y": float(
+                    group.iloc[index]["y"]
+                    + alpha * (group.iloc[index + 1]["y"] - group.iloc[index]["y"])
+                ),
             }
         )
     return rows
@@ -67,8 +75,8 @@ def _interpolated_gate_time(
     return t0 + (t1 - t0) * alpha
 
 
-def _path_length(segment: pd.DataFrame) -> float:
-    """Compute Euclidean path length over the samples of one passage."""
+def _sampled_path_length(segment: pd.DataFrame) -> float:
+    """Compute Euclidean length when an invalid passage lacks two endpoints."""
 
     xy = segment[["x", "y"]].dropna().to_numpy(float)
     return (
@@ -76,6 +84,26 @@ def _path_length(segment: pd.DataFrame) -> float:
         if len(xy) > 1
         else np.nan
     )
+
+
+def _path_length_between_crossings(
+    group: pd.DataFrame, entry: dict, exit_event: dict
+) -> float:
+    """Integrate path length between the interpolated G0 and G3 positions."""
+
+    interior = group[
+        (group["time"] > entry["time"])
+        & (group["time"] < exit_event["time"])
+        & group["valid_pose"]
+    ][["x", "y"]].to_numpy(float)
+    points = np.vstack(
+        [
+            np.array([[entry["x"], entry["y"]]]),
+            interior,
+            np.array([[exit_event["x"], exit_event["y"]]]),
+        ]
+    )
+    return float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
 
 
 def _route_from_core(
@@ -116,7 +144,11 @@ def detect_passages(
     geometry: AnalysisGeometry,
     config: PassageConfig | None = None,
 ) -> pd.DataFrame:
-    """Pair G0/G3 crossings and classify the median route through the core."""
+    """Pair G0/G3 crossings and classify the median route through the core.
+
+    A new G0 replaces an unmatched older G0. This prevents one missed G3 in a
+    closed-loop run from shifting every later entry/exit pair by one lap.
+    """
 
     config = config or PassageConfig()
     aligned = (
@@ -132,40 +164,63 @@ def detect_passages(
         group = group.sort_values("time").reset_index(drop=True)
         entries = _crossings(group, geometry.g0_approach_entry_s, geometry)
         exits = _crossings(group, geometry.g3_recovery_s, geometry)
-        exit_cursor = 0
         for passage_id, entry in enumerate(entries, start=1):
-            while (
-                exit_cursor < len(exits) and exits[exit_cursor]["time"] <= entry["time"]
-            ):
-                exit_cursor += 1
-            exit_event = exits[exit_cursor] if exit_cursor < len(exits) else None
+            entry["passage_id"] = passage_id
+
+        events = sorted(
+            [("entry", event) for event in entries]
+            + [("exit", event) for event in exits],
+            key=lambda item: item[1]["time"],
+        )
+        paired_events: list[tuple[dict, dict | None, str, int]] = []
+        active_entry: dict | None = None
+        for event_type, event in events:
+            if event_type == "entry":
+                if active_entry is not None:
+                    paired_events.append(
+                        (
+                            active_entry,
+                            None,
+                            "superseded_by_next_G0",
+                            event["index"],
+                        )
+                    )
+                active_entry = event
+            elif active_entry is not None:
+                paired_events.append((active_entry, event, "", event["index"] + 1))
+                active_entry = None
+        if active_entry is not None:
+            paired_events.append(
+                (active_entry, None, "missing_G3_before_run_end", len(group))
+            )
+
+        for entry, exit_event, reason, segment_end in paired_events:
             valid = exit_event is not None
-            reason = "" if valid else "missing_G3_before_run_end"
             if valid:
                 duration = (exit_event["time"] - entry["time"]).total_seconds()
-                if (
-                    not config.minimum_duration_s
-                    <= duration
-                    <= config.maximum_duration_s
+                if not (
+                    config.minimum_duration_s <= duration <= config.maximum_duration_s
                 ):
                     valid, reason = False, "duration_out_of_range"
-                segment = group.iloc[entry["index"] : exit_event["index"] + 1].copy()
-                exit_cursor += 1
             else:
                 duration = np.nan
-                segment = group.iloc[entry["index"] :].copy()
+            segment = group.iloc[entry["index"] : segment_end].copy()
             route_label, route_score, consistency, core_n = _route_from_core(
                 segment, geometry, config
             )
             if valid and route_label == "unknown":
                 valid, reason = False, "insufficient_core_samples"
-            path_length = _path_length(segment)
+            path_length = (
+                _path_length_between_crossings(group, entry, exit_event)
+                if exit_event is not None
+                else _sampled_path_length(segment)
+            )
             rows.append(
                 {
                     "condition": condition,
                     "run_name": run_name,
                     "robot_id": int(robot_id),
-                    "passage_id": passage_id,
+                    "passage_id": entry["passage_id"],
                     "valid": valid,
                     "invalid_reason": reason,
                     "route_label": route_label,

@@ -42,10 +42,11 @@ def route_distribution(passages: pd.DataFrame) -> pd.DataFrame:
 
 
 def passage_time_tables(passages: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Aggregate passage time and path length at robot level before comparison.
+    """Aggregate within robot before making condition-level comparisons.
 
-    Robot-first aggregation avoids treating thousands of trajectory frames as
-    independent experimental observations.
+    Repeated laps from one robot are summarized first. Relative passage time is
+    then calculated within each robot and finally summarized across robots, so
+    robots with more completed laps do not receive more weight.
     """
 
     valid = passages[passages["valid"]].copy()
@@ -58,17 +59,35 @@ def passage_time_tables(passages: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFr
         median_excess_path_length_m=("excess_path_length_m", "median"),
     )
     per_robot = sort_by_condition(per_robot, "robot_id")
-    condition = valid.groupby("condition", as_index=False).agg(
-        valid_passages=("passage_id", "size"),
-        median_passage_time_s=("passage_time_s", "median"),
-        median_excess_path_length_m=("excess_path_length_m", "median"),
+    per_robot_condition = per_robot.groupby(
+        ["condition", "robot_id"], as_index=False
+    ).agg(
+        median_passage_time_s=("median_passage_time_s", "median"),
+        median_excess_path_length_m=("median_excess_path_length_m", "median"),
     )
+    condition = per_robot_condition.groupby("condition", as_index=False).agg(
+        median_passage_time_s=("median_passage_time_s", "median"),
+        median_excess_path_length_m=("median_excess_path_length_m", "median"),
+    )
+    passage_counts = per_robot.groupby("condition", as_index=False).agg(
+        valid_passages=("passage_count", "sum")
+    )
+    condition = condition.merge(passage_counts, on="condition", how="left")
     condition = sort_by_condition(condition)
-    baseline = condition.loc[
-        condition["condition"] == "baseline", "median_passage_time_s"
-    ]
-    reference = float(baseline.iloc[0]) if len(baseline) else np.nan
-    condition["relative_passage_time"] = condition["median_passage_time_s"] / reference
+
+    baseline = per_robot_condition[per_robot_condition["condition"] == "baseline"][
+        ["robot_id", "median_passage_time_s"]
+    ].rename(columns={"median_passage_time_s": "baseline_passage_time_s"})
+    relative_by_condition: dict[str, float] = {}
+    for condition_name, group in per_robot_condition.groupby("condition"):
+        matched = group.merge(baseline, on="robot_id", how="inner")
+        ratios = matched["median_passage_time_s"] / matched["baseline_passage_time_s"]
+        relative_by_condition[str(condition_name)] = (
+            float(ratios.median()) if len(ratios) else np.nan
+        )
+    condition["relative_passage_time"] = condition["condition"].map(
+        relative_by_condition
+    )
     return per_robot, condition
 
 
