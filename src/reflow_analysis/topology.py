@@ -18,9 +18,6 @@ import pandas as pd
 from scipy.ndimage import gaussian_filter
 from scipy.spatial import cKDTree
 
-from .splitter_inference import _spatially_resample
-
-
 @dataclass(frozen=True)
 class TopologyConfig:
     """Occupancy-grid resolution, cleanup, and graph-pruning settings."""
@@ -56,6 +53,31 @@ def _require_optional_dependencies():
             "Global topology needs optional dependencies: pip install -e '.[topology]'"
         ) from exc
     return nx, closing, disk, skeletonize
+
+
+def _spatially_resample(group: pd.DataFrame, step_m: float) -> np.ndarray:
+    """Sample one trajectory at equal travelled-distance intervals.
+
+    This helper belongs to the *optional global topology baseline*. Its
+    occupancy image would otherwise give stationary portions more weight than
+    moving portions. It is intentionally separate from horizontal sections in
+    the main splitter analysis, which use one sample per forward crossing.
+    """
+
+    xy = group.sort_values("time")[["x", "y"]].dropna().to_numpy(dtype=float)
+    if len(xy) < 2:
+        return np.empty((0, 2))
+    # Repeated held poses give duplicate distance coordinates, unsuitable for
+    # interpolation. Keep their first location at each unique arc length.
+    arc = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(xy, axis=0), axis=1))]
+    unique_arc, index = np.unique(arc, return_index=True)
+    xy = xy[index]
+    if unique_arc[-1] < step_m:
+        return xy[[0]]
+    query = np.arange(0.0, unique_arc[-1], step_m)
+    return np.column_stack(
+        [np.interp(query, unique_arc, xy[:, 0]), np.interp(query, unique_arc, xy[:, 1])]
+    )
 
 
 def _prune_short_spurs(graph, positions: dict, maximum_length: float) -> None:
@@ -114,7 +136,7 @@ def infer_global_path_topology(
     baseline = trajectories[trajectories["condition"] == "baseline"]
     point_groups = []
     # Equal-arc-length sampling prevents slow portions from dominating the
-    # occupancy image, matching the rationale of local response localization.
+    # occupancy image. The main local method instead samples section crossings.
     for _, group in baseline.groupby(["run_name", "robot_id"]):
         points = _spatially_resample(group[group["valid_pose"]], config.grid_size_m / 2)
         if len(points):

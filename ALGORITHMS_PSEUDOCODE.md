@@ -877,5 +877,6 @@ Markov model and does not claim globally optimal sequence matching.
 | `metrics._pair_distance_summary` | 9.3 |
 | `plots.generate_all_plots` and plot functions | 10 |
 | `topology.infer_global_path_topology` | 11.1--11.3 |
+| `topology._spatially_resample` | 11.1 |
 | `topology.map_match_trajectory` | 11.4 |
 | `pipeline.run_full_analysis` | 2 |
