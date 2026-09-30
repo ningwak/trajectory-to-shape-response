@@ -14,9 +14,6 @@ import pandas as pd
 from scipy.ndimage import gaussian_filter
 from scipy.spatial import cKDTree
 
-from .splitter_inference import _spatially_resample
-
-
 @dataclass(frozen=True)
 class TopologyConfig:
     """Grid, morphology, and spur-pruning settings for the optional baseline."""
@@ -52,6 +49,29 @@ def _require_optional_dependencies():
             "Global topology needs optional dependencies: pip install -e '.[topology]'"
         ) from exc
     return nx, closing, disk, skeletonize
+
+
+def _spatially_resample(group: pd.DataFrame, step_m: float) -> np.ndarray:
+    """Sample a path by travelled distance for the optional occupancy map.
+
+    Repeated poses and slow motion create extra time samples without adding
+    path length. Distance sampling prevents those frames from dominating the
+    optional global path skeleton. The main horizontal-section analysis does
+    not call this helper.
+    """
+
+    xy = group.sort_values("time")[["x", "y"]].dropna().to_numpy(dtype=float)
+    if len(xy) < 2:
+        return np.empty((0, 2))
+    arc = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(xy, axis=0), axis=1))]
+    unique_arc, index = np.unique(arc, return_index=True)
+    xy = xy[index]
+    if unique_arc[-1] < step_m:
+        return xy[[0]]
+    query = np.arange(0.0, unique_arc[-1], step_m)
+    return np.column_stack(
+        [np.interp(query, unique_arc, xy[:, 0]), np.interp(query, unique_arc, xy[:, 1])]
+    )
 
 
 def _prune_short_spurs(graph, positions: dict, maximum_length: float) -> None:
