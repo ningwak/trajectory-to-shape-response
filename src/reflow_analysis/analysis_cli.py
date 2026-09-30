@@ -36,7 +36,11 @@ def _print_table(title: str, table: pd.DataFrame, digits: int = 3) -> None:
     """Print one readable result table with a consistent heading."""
 
     print(f"\n{title}\n{'-' * len(title)}")
-    print(table.round(digits).to_string(index=False))
+    print(
+        table.round(digits).fillna("N/A").to_string(index=False)
+        if len(table)
+        else "(none)"
+    )
 
 
 def main() -> None:
@@ -100,6 +104,41 @@ def main() -> None:
         "Representative G2 cross-section diagnostic",
         pd.DataFrame([{name: representative[name] for name in diagnostic_columns}]),
     )
+    # The state history is a descriptive summary of the causal inputs at 2 Hz,
+    # not a substitute for the full time series in online_state_summary.csv.
+    # Display coverage with conditional means: quantile NaNs mean insufficient
+    # arrivals, not a zero lateral position or zero speed.
+    history = pd.DataFrame(result.summary["online_state_history_means"])
+    _print_table(
+        "Online state over full history: arrival and approach means",
+        history[
+            [
+                "condition",
+                "run_count",
+                "state_updates",
+                "crossing_count_window_mean",
+                "time_since_last_crossing_s_mean",
+                "last_crossing_clock_valid_updates",
+                "n_approach_mean",
+            ]
+        ],
+    )
+    _print_table(
+        "Online state over full history: means at valid quantile timestamps",
+        history[
+            [
+                "condition",
+                "quantiles_valid_updates",
+                "quantiles_valid_fraction",
+                "v_s_q33_mps_mean",
+                "v_s_q50_mps_mean",
+                "v_s_q67_mps_mean",
+                "d_q33_m_mean",
+                "d_q50_m_mean",
+                "d_q67_m_mean",
+            ]
+        ],
+    )
     _print_table(
         "Compact evaluation (6 numerical entries per condition)",
         result.evaluation_tables["compact_evaluation"],
@@ -109,6 +148,28 @@ def main() -> None:
         result.evaluation_tables["passage_time_summary"][
             ["condition", "valid_passages", "mean_passage_time_s", "relative_passage_time"]
         ],
+    )
+    _print_table(
+        "Changed-condition route counts and shares",
+        pd.DataFrame(result.summary["route_counts_changed_condition"])[
+            ["condition", "route_label", "passage_count", "route_proportion"]
+        ],
+    )
+    _print_table(
+        "Ambiguous valid passages (passage_id = 1-based G0 entry for that robot)",
+        pd.DataFrame(result.summary["ambiguous_passages"])[
+            [
+                "condition",
+                "robot_id",
+                "passage_id",
+                "t_g0",
+                "route_score_m",
+                "passage_time_s",
+            ]
+        ]
+        if result.summary["ambiguous_passages"]
+        else pd.DataFrame(),
+        digits=5,
     )
     _print_table(
         "Per-robot passage time and path length",

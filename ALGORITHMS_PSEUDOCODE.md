@@ -48,7 +48,10 @@ ALGORITHM RunFullAnalysis(data_root, output_directory, configuration)
     write exactly six reviewable CSV tables
     write inferred geometry and analysis configuration as JSON
     generate exactly six figures
-    write one compact machine-readable summary
+    summarize full-history online-state means and their valid-update counts
+    list valid ambiguous passages by robot and G0-entry ordinal
+    write the state means, evaluation, pooled time, route counts, and
+        ambiguous-passage list in one machine-readable JSON summary
 
     RETURN all principal tables, figures, geometry, and summary in memory
 END ALGORITHM

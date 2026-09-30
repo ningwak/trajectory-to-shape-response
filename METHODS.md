@@ -82,6 +82,15 @@ The six exported tables are:
 
 Intermediate aligned samples, crossing events, pair-distance samples, and cross-sectional samples remain in memory and are not exported by default. Their definitions are documented here instead of generating schema/definition CSV files.
 
+The CLI and `analysis_summary.json` also show per-condition means of all nine
+online-state components over the recorded state timestamps, with valid-update
+counts for the six quantiles and the last-crossing clock. Quantile means omit
+updates with fewer than three recent arrivals; arrival and approach counts
+include zero-count updates. The JSON also lists each valid changed-condition
+ambiguous passage by robot ID and one-based G0-entry `passage_id`, and contains
+the compact evaluation, pooled passage time, and route counts/shares. These
+extra summaries do not create additional CSV files.
+
 ## 8. Statistical limitations
 
 Repeated frames and repeated laps are useful descriptive observations but are not independent experimental replicates. The pipeline does not report a p-value from frame-level tests. General claims require more runs, geometries, demand levels, hazards, and randomized condition order.

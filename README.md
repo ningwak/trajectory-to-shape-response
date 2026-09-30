@@ -157,10 +157,30 @@ The complete CLI prints concise tables for:
 
 - data quality per robot JSON;
 - inferred splitter and gate landmarks;
+- full-history means of the 9-component online state for each condition, with
+  the number of state updates and the availability of recent-arrival quantiles;
 - the compact 6-component evaluation;
 - pooled mean time and valid-passage count per condition;
+- changed-condition inner/outer/ambiguous counts and shares;
+- every valid ambiguous passage with its robot ID, passage ID, G0 time,
+  route score, and passage duration;
 - per-robot passage time and path length;
 - invalid and retained passage counts.
+
+`analysis_summary.json` contains the same main numbers in
+`online_state_history_means`, `compact_evaluation`, `passage_time_summary`,
+`route_counts_changed_condition`, and `ambiguous_passages`. The online means
+average equally spaced state updates over the **entire recorded history** of
+each condition. Counts include zero-event timestamps. Velocity/position
+quantiles are averaged only when at least three recent crossings supported
+them; their valid-update count and fraction are reported. The last-crossing
+clock is averaged only after the first G0 event. These history summaries are
+descriptive and are not values available to the decision agent at one instant.
+Unavailable values are JSON `null`, not zero or the non-standard `NaN` token.
+
+In `ambiguous_passages`, `passage_id` is the one-based count of that robot's G0
+entries within its run. It is a useful local lap index but can include an entry
+whose corresponding passage was later marked invalid.
 
 Only six reviewable CSV files are saved:
 
@@ -205,22 +225,22 @@ from google.colab import drive
 drive.mount("/content/drive")
 ```
 
-**2. Clone and install**
+**2. Upload and install this annotated edition**
 
-```bash
+The annotated edition is distributed as `trajectory-to-shape-response-commented.zip`.
+Cloning the GitHub main repository would install a different code version.
+
+```python
 %cd /content
-!git clone https://github.com/ningwak/trajectory-to-shape-response.git
-%cd /content/trajectory-to-shape-response
+from google.colab import files
+files.upload()  # Select trajectory-to-shape-response-commented.zip.
+!unzip -oq /content/trajectory-to-shape-response-commented.zip -d /content
+%cd /content/trajectory-to-shape-response-commented
 !python -m pip install -e ".[dev]"
 ```
 
-If the repository already exists in the current Colab runtime:
-
-```bash
-%cd /content/trajectory-to-shape-response
-!git pull --ff-only
-!python -m pip install -e ".[dev]"
-```
+To update an existing Colab copy, upload the newer zip and repeat the unzip
+and install commands above.
 
 **3. Run tests**
 
@@ -257,6 +277,13 @@ table_dir = Path("/content/drive/MyDrive/Roboflow-dataset/analysis_output_compac
 display(pd.read_csv(table_dir / "compact_evaluation.csv"))
 display(pd.read_csv(table_dir / "robot_passage_time.csv"))
 display(pd.read_csv(table_dir / "section_diagnostics.csv"))
+
+import json
+summary_path = table_dir.parent / "analysis_summary.json"
+with summary_path.open(encoding="utf-8") as source:
+    summary = json.load(source)
+display(pd.DataFrame(summary["online_state_history_means"]))
+display(pd.DataFrame(summary["ambiguous_passages"]))
 ```
 
 ## Optional global path-topology baseline
