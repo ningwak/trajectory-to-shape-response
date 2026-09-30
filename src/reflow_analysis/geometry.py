@@ -1,4 +1,4 @@
-"""Data-derived local flow coordinates and inferred analysis landmarks."""
+"""Coordinate transforms and inferred analysis landmarks."""
 
 from __future__ import annotations
 
@@ -13,9 +13,11 @@ import pandas as pd
 
 @dataclass(frozen=True)
 class AnalysisGeometry:
-    """Local flow frame and four virtual gates inferred from trajectories.
+    """Analysis frame and four virtual gates for local passages.
 
-    ``s`` follows the baseline flow and ``d`` is its left normal. The line
+    In the main analysis ``s`` is horizontal x displacement from the nominal
+    route-edge midpoint and ``d`` is vertical y displacement from that edge.
+    The transform itself also supports other orthonormal frames. The line
     ``d = splitter_intercept_m + splitter_slope * s`` is an *effective*
     trajectory separator; it is not presented as a measured physical pose.
     """

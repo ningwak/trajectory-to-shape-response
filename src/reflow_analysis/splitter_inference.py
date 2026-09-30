@@ -1,4 +1,9 @@
-"""Infer a local flow frame and an effective splitter from trajectory changes."""
+"""Infer an effective route separator on the horizontal upper corridor leg.
+
+The JSON supplies a nominal rectangular route, but not the physical barrier
+pose. The upper reference edge defines our analysis frame; the separator is
+inferred from where the recorded passages actually travel.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +11,6 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-from scipy.ndimage import gaussian_filter, label
 from scipy.stats import wasserstein_distance
 
 from .geometry import AnalysisGeometry, world_to_corridor
@@ -14,22 +18,17 @@ from .geometry import AnalysisGeometry, world_to_corridor
 
 @dataclass(frozen=True)
 class SplitterInferenceConfig:
-    """Thresholds for locating one response region and two stable route bands."""
+    """Transparent cross-section settings for this near-horizontal experiment."""
 
-    spatial_step_m: float = 0.02
-    occupancy_bin_m: float = 0.04
-    occupancy_smoothing_bins: float = 1.2
-    component_relative_threshold: float = 0.35
     section_step_m: float = 0.04
     section_half_width_m: float = 0.75
+    edge_inset_fraction: float = 0.10
     minimum_cluster_samples: int = 3
     minimum_core_separation_m: float = 0.25
-    minimum_core_silhouette: float = 0.55
-    maximum_core_gap_fraction: float = 0.20
-    section_upstream_margin_m: float = 0.45
-    section_downstream_margin_m: float = 0.25
-    null_bootstrap_repeats: int = 100
-    null_quantile: float = 0.95
+    minimum_supported_fraction: float = 0.75
+    response_fraction_of_peak: float = 0.20
+    baseline_split_repeats: int = 100
+    baseline_reference_quantile: float = 0.95
     random_seed: int = 7
 
 
@@ -51,134 +50,26 @@ def _changed_condition(values) -> str:
     return changed[0]
 
 
-def _spatially_resample(group: pd.DataFrame, step_m: float) -> np.ndarray:
-    """Sample a trajectory by arc length so pauses do not dominate occupancy."""
+def _upper_reference_edge(
+    rectangle_corners: tuple[tuple[float, float], ...],
+) -> tuple[float, float, float]:
+    """Select the upper nominal route edge, not the physical splitter.
 
-    xy = group.sort_values("time")[["x", "y"]].dropna().to_numpy(dtype=float)
-    if len(xy) < 2:
-        return np.empty((0, 2))
-    arc = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(xy, axis=0), axis=1))]
-    unique_arc, index = np.unique(arc, return_index=True)
-    xy = xy[index]
-    if unique_arc[-1] < step_m:
-        return xy[[0]]
-    query = np.arange(0.0, unique_arc[-1], step_m)
-    return np.column_stack(
-        [np.interp(query, unique_arc, xy[:, 0]), np.interp(query, unique_arc, xy[:, 1])]
-    )
+    This experiment has one visibly affected, near-horizontal upper leg. The
+    supplied rectangle defines its reproducible x range and y origin without
+    using the accompanying video or manually entering a barrier position.
+    """
 
-
-def _condition_points(
-    trajectories: pd.DataFrame, step_m: float
-) -> dict[str, np.ndarray]:
-    """Create equal-arc-length point clouds for each experimental condition."""
-
-    valid = trajectories[trajectories["valid_pose"]].copy()
-    output: dict[str, list[np.ndarray]] = {}
-    for keys, group in valid.groupby(["condition", "run_name", "robot_id"], sort=True):
-        points = _spatially_resample(group, step_m)
-        if len(points):
-            output.setdefault(str(keys[0]), []).append(points)
-    return {condition: np.vstack(groups) for condition, groups in output.items()}
-
-
-def _response_component(
-    points: dict[str, np.ndarray], config: SplitterInferenceConfig
-) -> tuple[np.ndarray, pd.DataFrame]:
-    """Locate the strongest connected baseline-depletion component in 2-D."""
-
-    if "baseline" not in points:
-        raise ValueError("Splitter inference needs a baseline run")
-    changed_name = _changed_condition(points)
-    all_points = np.vstack([points["baseline"], points[changed_name]])
-    margin = 2 * config.occupancy_bin_m
-    x_edges = np.arange(
-        all_points[:, 0].min() - margin,
-        all_points[:, 0].max() + margin,
-        config.occupancy_bin_m,
-    )
-    y_edges = np.arange(
-        all_points[:, 1].min() - margin,
-        all_points[:, 1].max() + margin,
-        config.occupancy_bin_m,
-    )
-    densities: dict[str, np.ndarray] = {}
-    for name in ("baseline", changed_name):
-        hist, _, _ = np.histogram2d(
-            points[name][:, 0], points[name][:, 1], bins=(x_edges, y_edges)
-        )
-        smooth = gaussian_filter(hist, config.occupancy_smoothing_bins)
-        densities[name] = smooth / max(smooth.sum(), 1.0)
-    difference = densities["baseline"] - densities[changed_name]
-    positive_baseline = densities["baseline"][densities["baseline"] > 0]
-    density_floor = np.quantile(positive_baseline, 0.50)
-    mask = (difference >= config.component_relative_threshold * difference.max()) & (
-        densities["baseline"] >= density_floor
-    )
-    labels, count = label(mask)
-    if count == 0:
-        raise RuntimeError("No connected trajectory-response region was detected")
-    scores = [
-        difference[labels == component].sum() for component in range(1, count + 1)
-    ]
-    selected = int(np.argmax(scores)) + 1
-    ii, jj = np.where(labels == selected)
-    x_centers = (x_edges[:-1] + x_edges[1:]) / 2
-    y_centers = (y_edges[:-1] + y_edges[1:]) / 2
-    weights = difference[ii, jj]
-    component = pd.DataFrame(
-        {
-            "x": x_centers[ii],
-            "y": y_centers[jj],
-            "occupancy_difference": weights,
-            "baseline_density": densities["baseline"][ii, jj],
-            "changed_density": densities[changed_name][ii, jj],
-        }
-    )
-    origin = np.array(
-        [
-            np.average(component["x"], weights=weights),
-            np.average(component["y"], weights=weights),
-        ]
-    )
-    return origin, component
-
-
-def _local_frame(
-    trajectories: pd.DataFrame, origin: np.ndarray, component: pd.DataFrame
-) -> tuple[np.ndarray, np.ndarray]:
-    """Estimate and orient the local baseline tangent from valid velocities."""
-
-    radius = max(
-        0.25,
-        float(
-            np.hypot(component["x"] - origin[0], component["y"] - origin[1]).quantile(
-                0.90
-            )
-        ),
-    )
-    baseline = trajectories[trajectories["condition"] == "baseline"].copy()
-    near = baseline[
-        baseline["valid_kinematics"]
-        & (
-            ((baseline["x"] - origin[0]) ** 2 + (baseline["y"] - origin[1]) ** 2)
-            <= radius**2
-        )
-    ]
-    velocities = near[["vx", "vy"]].dropna().to_numpy(dtype=float)
-    speeds = np.linalg.norm(velocities, axis=1)
-    velocities = velocities[speeds > 0.04]
-    if len(velocities) < 10:
-        raise RuntimeError(
-            "Too few valid baseline velocities in the inferred response region"
-        )
-    unit = velocities / np.linalg.norm(velocities, axis=1, keepdims=True)
-    tangent = np.median(unit, axis=0)
-    tangent /= np.linalg.norm(tangent)
-    if np.dot(tangent, np.mean(velocities, axis=0)) < 0:
-        tangent *= -1
-    normal = np.array([-tangent[1], tangent[0]])
-    return tangent, normal
+    corners = np.asarray(rectangle_corners, dtype=float)
+    if corners.shape != (4, 2) or not np.isfinite(corners).all():
+        raise ValueError("Expected four finite nominal-route corners")
+    top = corners[np.argsort(corners[:, 1])[-2:]]
+    if abs(top[0, 1] - top[1, 1]) > 0.05:
+        raise ValueError("This analysis requires a nearly horizontal upper edge")
+    x_left, x_right = sorted(top[:, 0])
+    if x_right <= x_left:
+        raise ValueError("The upper edge must have positive length")
+    return float(x_left), float(x_right), float(top[:, 1].mean())
 
 
 def _interpolate_sections(
@@ -247,10 +138,10 @@ def _interpolate_sections(
 def _kmeans_1d(values: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
     """Fit the globally optimal two-cluster K-means split in one dimension.
 
-    K=2 is used as a transparent baseline because the physical hypothesis is
-    specifically two routes around one splitter. In one dimension, every
-    K-means solution is a split of the sorted samples. Enumerating those splits
-    is deterministic and avoids the local minima of Lloyd iteration.
+    K=2 describes the two observed route bands. In one dimension, every
+    optimum partitions the sorted samples at one split point. We enumerate
+    these points to avoid initialization; silhouette remains a diagnostic,
+    not another threshold tuned on this small dataset.
     """
 
     values = np.asarray(values, dtype=float)
@@ -296,35 +187,41 @@ def _kmeans_1d(values: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
     return centers, labels_, float(np.mean(silhouettes))
 
 
-def _null_threshold(
+def _baseline_variability_reference(
     crossings: pd.DataFrame, s_grid: np.ndarray, config: SplitterInferenceConfig
 ) -> float:
-    """Estimate a baseline-only Wasserstein threshold by repeated random splits.
+    """Estimate a baseline-only Wasserstein *reference* by random splits.
 
-    This empirical null avoids declaring ordinary baseline variation to be a
-    barrier response and is easier to explain than a fitted parametric model.
+    At each section, randomly divide the baseline passage crossings into two
+    halves and compare them. Pool those distances over sections and report a
+    high quantile on the plot. Repeated laps/adjacent sections are correlated:
+    this is NOT a formal test and does NOT determine gates or the response core.
     """
 
     rng = np.random.default_rng(config.random_seed)
     baseline = crossings[crossings["condition"] == "baseline"]
-    null: list[float] = []
+    distances: list[float] = []
     for section_s in s_grid:
         values = baseline.loc[np.isclose(baseline["s"], section_s), "d"].to_numpy(
             dtype=float
         )
         if len(values) < 2 * config.minimum_cluster_samples:
             continue
-        for _ in range(config.null_bootstrap_repeats):
+        for _ in range(config.baseline_split_repeats):
             shuffled = rng.permutation(values)
             middle = len(shuffled) // 2
-            null.append(
+            distances.append(
                 float(wasserstein_distance(shuffled[:middle], shuffled[middle:]))
             )
-    return float(np.quantile(null, config.null_quantile)) if null else 0.05
+    return (
+        float(np.quantile(distances, config.baseline_reference_quantile))
+        if distances
+        else np.nan
+    )
 
 
 def _interval_near_peak(mask: np.ndarray, peak_index: int) -> tuple[int, int]:
-    """Choose the true interval containing the response peak, or the longest one."""
+    """Choose a contiguous accepted interval containing the profile peak."""
 
     intervals: list[tuple[int, int]] = []
     start = None
@@ -335,7 +232,7 @@ def _interval_near_peak(mask: np.ndarray, peak_index: int) -> tuple[int, int]:
             intervals.append((start, index - 1))
             start = None
     if not intervals:
-        return peak_index, peak_index
+        raise RuntimeError("No supported response interval was found")
     containing = [
         interval for interval in intervals if interval[0] <= peak_index <= interval[1]
     ]
@@ -347,34 +244,35 @@ def _interval_near_peak(mask: np.ndarray, peak_index: int) -> tuple[int, int]:
 
 
 def infer_effective_splitter(
-    trajectories: pd.DataFrame, config: SplitterInferenceConfig | None = None
+    trajectories: pd.DataFrame,
+    rectangle_corners: tuple[tuple[float, float], ...],
+    config: SplitterInferenceConfig | None = None,
 ) -> SplitterInferenceResult:
-    """Infer local geometry without using videos or a manually entered splitter pose."""
+    """Infer observed routes on the nominal upper edge, not barrier pose.
+
+    Here s=x-x_midpoint and d=y-y_upper_edge. Gate placement uses the sustained
+    Wasserstein response relative to its own peak; the baseline-only random
+    split is displayed for context but never used as a detection threshold.
+    """
 
     config = config or SplitterInferenceConfig()
-    points = _condition_points(trajectories, config.spatial_step_m)
-    origin, component = _response_component(points, config)
-    tangent, normal = _local_frame(trajectories, origin, component)
-    provisional = AnalysisGeometry(
-        origin_x=float(origin[0]),
-        origin_y=float(origin[1]),
-        tangent_x=float(tangent[0]),
-        tangent_y=float(tangent[1]),
-        normal_x=float(normal[0]),
-        normal_y=float(normal[1]),
-    )
+    x_left, x_right, y_top = _upper_reference_edge(rectangle_corners)
+    origin_x = 0.5 * (x_left + x_right)
+    provisional = AnalysisGeometry(origin_x=origin_x, origin_y=y_top)
     aligned = world_to_corridor(trajectories, provisional)
-    component_s = (component["x"] - origin[0]) * tangent[0] + (
-        component["y"] - origin[1]
-    ) * tangent[1]
-    grid_min = float(component_s.min() - config.section_upstream_margin_m)
-    grid_max = float(component_s.max() + config.section_downstream_margin_m)
+    # The JSON vertices are turns, not useful passage gates. Keep the analysis
+    # on the straight interior of the top edge to avoid corner recrossings.
+    if not 0 <= config.edge_inset_fraction < 0.5:
+        raise ValueError("edge_inset_fraction must be in [0, 0.5)")
+    inset = config.edge_inset_fraction * (x_right - x_left)
     s_grid = np.arange(
-        grid_min, grid_max + config.section_step_m / 2, config.section_step_m
+        x_left + inset - origin_x,
+        x_right - inset - origin_x + config.section_step_m / 2,
+        config.section_step_m,
     )
     crossings = _interpolate_sections(aligned, s_grid, config.section_half_width_m)
     changed_name = _changed_condition(crossings["condition"])
-    threshold = _null_threshold(crossings, s_grid, config)
+    reference = _baseline_variability_reference(crossings, s_grid, config)
 
     rows: list[dict[str, object]] = []
     for section_s in s_grid:
@@ -395,7 +293,7 @@ def infer_effective_splitter(
                 if len(base) and len(changed)
                 else np.nan
             ),
-            "null_threshold_m": threshold,
+            "baseline_reference_m": reference,
             "cluster_0_center_m": np.nan,
             "cluster_1_center_m": np.nan,
             "separator_midpoint_m": np.nan,
@@ -403,7 +301,6 @@ def infer_effective_splitter(
             "silhouette": np.nan,
             "minimum_cluster_n": 0,
             "baseline_median_m": np.nan,
-            "gap_fraction": np.nan,
             "stable_core_valid": False,
         }
         if len(changed) >= 2 * config.minimum_cluster_samples:
@@ -412,16 +309,11 @@ def infer_effective_splitter(
             separation = centers[1] - centers[0]
             baseline_median = float(np.median(base)) if len(base) else np.nan
             midpoint = float(centers.mean())
-            gap_fraction = float(
-                np.mean(np.abs(changed - midpoint) < 0.15 * separation)
-            )
-            # The physical hypothesis is two supported route bands with the
-            # natural baseline path lying in the depleted gap between them.
+            # K=2 always returns two centers, even for one broad path. Require
+            # two populated, separated sides around the natural baseline path.
             stable_core = (
                 counts.min() >= config.minimum_cluster_samples
                 and separation >= config.minimum_core_separation_m
-                and silhouette >= config.minimum_core_silhouette
-                and gap_fraction <= config.maximum_core_gap_fraction
                 and centers[0] < baseline_median < centers[1]
             )
             row.update(
@@ -433,7 +325,6 @@ def infer_effective_splitter(
                     "silhouette": silhouette,
                     "minimum_cluster_n": int(counts.min()),
                     "baseline_median_m": baseline_median,
-                    "gap_fraction": gap_fraction,
                     "stable_core_valid": bool(stable_core),
                 }
             )
@@ -441,25 +332,26 @@ def infer_effective_splitter(
     diagnostics = pd.DataFrame(rows)
     baseline_support = (
         diagnostics["baseline_n"].to_numpy()
-        >= 0.75 * diagnostics.loc[diagnostics["baseline_n"] > 0, "baseline_n"].median()
+        >= config.minimum_supported_fraction
+        * diagnostics.loc[diagnostics["baseline_n"] > 0, "baseline_n"].median()
     )
     changed_support = (
         diagnostics["changed_n"].to_numpy()
-        >= 0.75 * diagnostics.loc[diagnostics["changed_n"] > 0, "changed_n"].median()
+        >= config.minimum_supported_fraction
+        * diagnostics.loc[diagnostics["changed_n"] > 0, "changed_n"].median()
     )
     supported = baseline_support & changed_support
-    response = (
-        diagnostics["wasserstein_m"].fillna(0).to_numpy() > threshold
-    ) & supported
-    max_index = int(diagnostics["wasserstein_m"].fillna(-np.inf).to_numpy().argmax())
+    profile = diagnostics["wasserstein_m"].fillna(0).to_numpy()
+    max_index = int(np.argmax(np.where(supported, profile, -np.inf)))
+    peak = profile[max_index]
+    if not np.isfinite(peak) or peak <= 0:
+        raise RuntimeError("No supported trajectory response was found")
+    # A simple peak-relative interval describes where the observed difference
+    # persists. It does not claim a statistically exact intervention onset.
+    response = supported & (profile >= config.response_fraction_of_peak * peak)
     response_start, response_end = _interval_near_peak(response, max_index)
     core_mask = response & diagnostics["stable_core_valid"].to_numpy(dtype=bool)
     core_start, core_end = _interval_near_peak(core_mask, max_index)
-    if core_start == core_end and not core_mask[core_start]:
-        raise RuntimeError(
-            "The changed trajectories do not support a stable two-route separator"
-        )
-
     selected_core_mask = np.zeros(len(diagnostics), dtype=bool)
     selected_core_mask[core_start : core_end + 1] = True
 
@@ -475,9 +367,12 @@ def infer_effective_splitter(
     median_separation = float(core["cluster_separation_m"].median())
     ambiguity = max(0.02, 0.10 * median_separation)
 
-    upstream = diagnostics.iloc[: response_start + 1]
-    supported_upstream = upstream.loc[supported[: response_start + 1], "s"]
-    g0 = float(supported_upstream.iloc[0])
+    supported_upstream = np.flatnonzero(
+        supported & (np.arange(len(s_grid)) < response_start)
+    )
+    if not len(supported_upstream):
+        raise RuntimeError("No supported approach section before the response")
+    g0 = float(s_grid[supported_upstream[0]])
     g1 = float(diagnostics["s"].iloc[response_start])
     g3 = float(diagnostics["s"].iloc[response_end])
     c0, c1 = float(diagnostics["s"].iloc[core_start]), float(
@@ -489,12 +384,8 @@ def infer_effective_splitter(
             "No supported approach section was found before the response"
         )
     geometry = AnalysisGeometry(
-        origin_x=float(origin[0]),
-        origin_y=float(origin[1]),
-        tangent_x=float(tangent[0]),
-        tangent_y=float(tangent[1]),
-        normal_x=float(normal[0]),
-        normal_y=float(normal[1]),
+        origin_x=origin_x,
+        origin_y=y_top,
         g0_approach_entry_s=g0,
         g1_response_entry_s=g1,
         g2_route_s=g2,
@@ -505,6 +396,7 @@ def infer_effective_splitter(
         splitter_slope=slope,
         ambiguous_half_width_m=ambiguity,
         gate_half_width_m=config.section_half_width_m,
+        inference_method="horizontal JSON route edge; trajectory-derived separator",
     )
     diagnostics["section_support_valid"] = supported
     diagnostics["response_valid"] = response

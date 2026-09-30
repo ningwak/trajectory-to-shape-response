@@ -13,12 +13,11 @@ from .io import sort_by_condition
 
 @dataclass(frozen=True)
 class PassageConfig:
-    """Validity thresholds for local G0-to-G3 passage extraction."""
+    """Basic support and duration checks for local G0-to-G3 passages."""
 
     minimum_duration_s: float = 0.5
     maximum_duration_s: float = 15.0
     minimum_core_samples: int = 3
-    minimum_sign_consistency: float = 0.70
 
 
 def _crossings(
@@ -108,12 +107,12 @@ def _path_length_between_crossings(
 
 def _route_from_core(
     segment: pd.DataFrame, geometry: AnalysisGeometry, config: PassageConfig
-) -> tuple[str, float, float, int]:
+) -> tuple[str, float, int]:
     """Classify a route using the median offset over the full stable core.
 
     A core median is less sensitive than a single gate sample to tracking noise
-    and short lateral reversals. Sign consistency creates a separate ambiguous
-    class instead of forcing a low-confidence inner/outer decision.
+    or a brief lateral reversal. Near-zero offsets are explicitly ambiguous;
+    missing core coverage is unknown rather than forcing a route label.
     """
 
     core = segment[
@@ -121,22 +120,16 @@ def _route_from_core(
         & segment["valid_pose"]
     ]
     if len(core) < config.minimum_core_samples:
-        return "unknown", np.nan, np.nan, len(core)
+        return "unknown", np.nan, len(core)
     score_samples = core["d"].to_numpy(float) - geometry.splitter_d(
         core["s"].to_numpy(float)
     )
     score = float(np.median(score_samples))
-    sign_consistency = float(
-        max(np.mean(score_samples > 0), np.mean(score_samples < 0))
-    )
-    if (
-        abs(score) <= geometry.ambiguous_half_width_m
-        or sign_consistency < config.minimum_sign_consistency
-    ):
+    if abs(score) <= geometry.ambiguous_half_width_m:
         label = "ambiguous"
     else:
         label = "outer" if score > 0 else "inner"
-    return label, score, sign_consistency, len(core)
+    return label, score, len(core)
 
 
 def detect_passages(
@@ -205,7 +198,7 @@ def detect_passages(
             else:
                 duration = np.nan
             segment = group.iloc[entry["index"] : segment_end].copy()
-            route_label, route_score, consistency, core_n = _route_from_core(
+            route_label, route_score, core_n = _route_from_core(
                 segment, geometry, config
             )
             if valid and route_label == "unknown":
@@ -225,7 +218,6 @@ def detect_passages(
                     "invalid_reason": reason,
                     "route_label": route_label,
                     "route_score_m": route_score,
-                    "core_sign_consistency": consistency,
                     "core_sample_count": core_n,
                     "t_g0": entry["time"],
                     "t_g1": _interpolated_gate_time(

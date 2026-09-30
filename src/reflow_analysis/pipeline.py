@@ -95,7 +95,11 @@ def run_full_analysis(
     runs = load_dataset(data_root)
     trajectories, quality = preprocess_dataset(runs, config.preprocessing)
     manifest = build_run_manifest(runs)
-    inferred = infer_effective_splitter(trajectories, config.splitter)
+    # The upper nominal edge gives a reproducible horizontal analysis frame;
+    # these corners do not supply (or imply) a physical barrier location.
+    inferred = infer_effective_splitter(
+        trajectories, runs[0].robots[0].rectangle_corners, config.splitter
+    )
     geometry = inferred.geometry
     trajectories = world_to_corridor(trajectories, geometry)
     passages = detect_passages(trajectories, geometry, config.passages)

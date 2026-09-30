@@ -189,17 +189,17 @@ def plot_wasserstein_profile(
     )
     ax.plot(
         diagnostics["s"],
-        diagnostics["null_threshold_m"],
+        diagnostics["baseline_reference_m"],
         "--",
         color="#C00000",
-        label="baseline split-null 95%",
+        label="baseline-only variability (descriptive)",
     )
     ax.axvspan(
         geometry.g1_response_entry_s,
         geometry.g3_recovery_s,
         color="#FFC000",
         alpha=0.12,
-        label="supported response interval",
+        label="peak-relative response interval",
     )
     ax.axvspan(
         geometry.core_start_s,
@@ -211,7 +211,7 @@ def plot_wasserstein_profile(
     ax.set(
         xlabel="local longitudinal s [m]",
         ylabel="1-D Wasserstein distance [m]",
-        title="Where a trajectory response becomes detectable",
+        title="Cross-sectional trajectory response",
     )
     ax.grid(alpha=0.2)
     ax.legend(frameon=False)

@@ -42,11 +42,13 @@ def route_distribution(passages: pd.DataFrame) -> pd.DataFrame:
 
 
 def passage_time_tables(passages: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Aggregate within robot before making condition-level comparisons.
+    """Report per-robot medians, but compare conditions by pooled passage mean.
 
-    Repeated laps from one robot are summarized first. Relative passage time is
-    then calculated within each robot and finally summarized across robots, so
-    robots with more completed laps do not receive more weight.
+    The main question here is the mean duration of a valid traversal in each
+    observed run. Therefore every valid passage has one vote in that estimate;
+    the changed/baseline ratio compares those two pooled means. Per-robot
+    medians remain visible as a heterogeneity check. Neither the passages nor
+    the two runs are independent experimental replications.
     """
 
     valid = passages[passages["valid"]].copy()
@@ -59,34 +61,24 @@ def passage_time_tables(passages: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFr
         median_excess_path_length_m=("excess_path_length_m", "median"),
     )
     per_robot = sort_by_condition(per_robot, "robot_id")
-    per_robot_condition = per_robot.groupby(
-        ["condition", "robot_id"], as_index=False
-    ).agg(
-        median_passage_time_s=("median_passage_time_s", "median"),
-        median_excess_path_length_m=("median_excess_path_length_m", "median"),
+    condition = valid.groupby("condition", as_index=False).agg(
+        mean_passage_time_s=("passage_time_s", "mean"),
+        valid_passages=("passage_time_s", "size"),
     )
-    condition = per_robot_condition.groupby("condition", as_index=False).agg(
-        median_passage_time_s=("median_passage_time_s", "median"),
-        median_excess_path_length_m=("median_excess_path_length_m", "median"),
+    # Excess distance is deliberately a median: occasional tracking/path
+    # outliers should not dominate this separate geometric descriptor.
+    excess = valid.groupby("condition", as_index=False).agg(
+        median_excess_path_length_m=("excess_path_length_m", "median")
     )
-    passage_counts = per_robot.groupby("condition", as_index=False).agg(
-        valid_passages=("passage_count", "sum")
-    )
-    condition = condition.merge(passage_counts, on="condition", how="left")
+    condition = condition.merge(excess, on="condition", how="left")
     condition = sort_by_condition(condition)
-
-    baseline = per_robot_condition[per_robot_condition["condition"] == "baseline"][
-        ["robot_id", "median_passage_time_s"]
-    ].rename(columns={"median_passage_time_s": "baseline_passage_time_s"})
-    relative_by_condition: dict[str, float] = {}
-    for condition_name, group in per_robot_condition.groupby("condition"):
-        matched = group.merge(baseline, on="robot_id", how="inner")
-        ratios = matched["median_passage_time_s"] / matched["baseline_passage_time_s"]
-        relative_by_condition[str(condition_name)] = (
-            float(ratios.median()) if len(ratios) else np.nan
-        )
-    condition["relative_passage_time"] = condition["condition"].map(
-        relative_by_condition
+    baseline = condition.loc[
+        condition["condition"] == "baseline", "mean_passage_time_s"
+    ]
+    if len(baseline) != 1:
+        raise ValueError("Passage-time comparison needs one baseline condition")
+    condition["relative_passage_time"] = (
+        condition["mean_passage_time_s"] / float(baseline.iloc[0])
     )
     return per_robot, condition
 
@@ -186,5 +178,6 @@ def build_evaluation_tables(
         "compact_evaluation": compact,
         "route_distribution": distribution,
         "robot_passage_time": per_robot,
+        "passage_time_summary": condition,
         "invalid_passage_summary": invalid,
     }

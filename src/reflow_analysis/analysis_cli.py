@@ -89,7 +89,7 @@ def main() -> None:
         "baseline_n",
         "changed_n",
         "wasserstein_m",
-        "null_threshold_m",
+        "baseline_reference_m",
         "cluster_0_center_m",
         "cluster_1_center_m",
         "cluster_separation_m",
@@ -103,6 +103,12 @@ def main() -> None:
     _print_table(
         "Compact evaluation (6 numerical entries per condition)",
         result.evaluation_tables["compact_evaluation"],
+    )
+    _print_table(
+        "Pooled valid-passage mean time",
+        result.evaluation_tables["passage_time_summary"][
+            ["condition", "valid_passages", "mean_passage_time_s", "relative_passage_time"]
+        ],
     )
     _print_table(
         "Per-robot passage time and path length",
