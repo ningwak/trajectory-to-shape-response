@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 import pytest
 
-from reflow_analysis.splitter_inference import _kmeans_1d
+from reflow_analysis.splitter_inference import (
+    SplitterInferenceConfig,
+    _kmeans_1d,
+    _upper_reference_edge,
+    infer_effective_splitter,
+)
 
 
 def test_one_dimensional_kmeans_finds_global_two_cluster_split():
@@ -29,3 +35,55 @@ def test_silhouette_excludes_each_sample_from_its_own_cluster_distance():
         ]
     )
     assert silhouette == pytest.approx(expected)
+
+
+def test_upper_reference_edge_is_horizontal_and_ignores_corner_order():
+    corners = ((0.8, -0.8), (0.8, 0.4), (-0.8, -0.8), (-0.8, 0.4))
+    assert _upper_reference_edge(corners) == pytest.approx((-0.8, 0.8, 0.4))
+
+
+def test_baseline_reference_does_not_choose_response_gates():
+    # Eight independent toy paths each cross the same horizontal sections.
+    # Their changed-condition paths separate only after x reaches -0.2.
+    # This tests the data flow, not the actual RoboFlow response geometry.
+    rows = []
+    x_values = np.linspace(-0.8, 0.8, 17)
+    for condition in ("baseline", "barrier_v01"):
+        for robot_id in range(8):
+            natural_y = 0.44 + 0.004 * (robot_id - 3.5)
+            for index, x in enumerate(x_values):
+                y = natural_y
+                if condition != "baseline" and x >= -0.2:
+                    y += -0.20 if robot_id < 4 else 0.20
+                rows.append({
+                    "condition": condition,
+                    "run_name": condition,
+                    "robot_id": robot_id,
+                    "time": pd.Timestamp("2026-01-01", tz="UTC")
+                    + pd.Timedelta(seconds=index),
+                    "x": x,
+                    "y": y,
+                    "vx": 0.1,
+                    "vy": 0.0,
+                    "valid_pose": True,
+                })
+    trajectories = pd.DataFrame(rows)
+    corners = ((0.8, -0.8), (-0.8, -0.8), (-0.8, 0.4), (0.8, 0.4))
+    first = infer_effective_splitter(
+        trajectories, corners,
+        SplitterInferenceConfig(baseline_split_repeats=5, random_seed=1),
+    )
+    second = infer_effective_splitter(
+        trajectories, corners,
+        SplitterInferenceConfig(baseline_split_repeats=50, random_seed=2),
+    )
+    g1 = first.geometry.g1_response_entry_s
+    assert -0.28 <= g1 <= -0.16
+    assert first.geometry.g0_approach_entry_s == pytest.approx(-0.64)
+    assert first.geometry.tangent_x == pytest.approx(1.0)
+    assert first.geometry.tangent_y == pytest.approx(0.0)
+    assert first.geometry.g1_response_entry_s == second.geometry.g1_response_entry_s
+    assert first.geometry.core_start_s == second.geometry.core_start_s
+    assert first.section_diagnostics["baseline_reference_m"].iloc[0] != pytest.approx(
+        second.section_diagnostics["baseline_reference_m"].iloc[0]
+    )

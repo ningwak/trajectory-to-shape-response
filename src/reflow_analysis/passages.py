@@ -1,11 +1,4 @@
-"""Convert cyclic robot trajectories into structured local flow passages.
-
-The raw run is a continuous closed-loop log, whereas the interview analysis
-needs repeatable local units.  A passage begins at a forward G0 crossing and
-ends at the next forward G3 crossing.  A chronological state machine prevents
-one missed exit from shifting every later lap.  Completed passages receive
-timing, path-length, and barrier-route information.
-"""
+"""Detect local passages and label routes against the inferred separator."""
 
 from __future__ import annotations
 
@@ -20,23 +13,17 @@ from .io import sort_by_condition
 
 @dataclass(frozen=True)
 class PassageConfig:
-    """Small set of duration, support, and route-consistency requirements."""
+    """Basic support and duration checks for local G0-to-G3 passages."""
 
     minimum_duration_s: float = 0.5
     maximum_duration_s: float = 15.0
     minimum_core_samples: int = 3
-    minimum_sign_consistency: float = 0.70
 
 
 def _crossings(
     group: pd.DataFrame, gate_s: float, geometry: AnalysisGeometry
 ) -> list[dict]:
-    """Find forward crossings and interpolate their time and lateral position.
-
-    The test ``s[i] < gate <= s[i+1]`` counts only motion toward increasing s.
-    It also gives each passage one continuous crossing estimate rather than the
-    first discrete sample that happens to fall beyond the gate.
-    """
+    """Linearly interpolate all forward crossings of one transverse gate."""
 
     rows: list[dict] = []
     s, d = group["s"].to_numpy(float), group["d"].to_numpy(float)
@@ -44,11 +31,8 @@ def _crossings(
     for index in np.where(
         valid[:-1] & valid[1:] & (s[:-1] < gate_s) & (s[1:] >= gate_s)
     )[0]:
-        # alpha is the fractional location of the gate between adjacent samples.
         alpha = (gate_s - s[index]) / (s[index + 1] - s[index])
         d_cross = d[index] + alpha * (d[index + 1] - d[index])
-        # Exclude geometrically unrelated parts of the closed loop that project
-        # onto the same longitudinal coordinate outside the local corridor.
         if abs(d_cross) > geometry.gate_half_width_m:
             continue
         t0, t1 = pd.Timestamp(group.iloc[index]["time"]), pd.Timestamp(
@@ -59,8 +43,6 @@ def _crossings(
                 "time": t0 + (t1 - t0) * alpha,
                 "index": int(index + 1),
                 "d": float(d_cross),
-                # Store the continuous world-frame gate point as well.  These
-                # endpoints make path length consistent with interpolated time.
                 "x": float(
                     group.iloc[index]["x"]
                     + alpha * (group.iloc[index + 1]["x"] - group.iloc[index]["x"])
@@ -77,7 +59,7 @@ def _crossings(
 def _interpolated_gate_time(
     segment: pd.DataFrame, gate_s: float
 ) -> pd.Timestamp | pd.NaT:
-    """Interpolate the first internal forward gate crossing of one passage."""
+    """Return the first forward crossing time of a gate inside one passage."""
 
     ordered = segment.sort_values("time").reset_index(drop=True)
     s = ordered["s"].to_numpy(float)
@@ -93,7 +75,7 @@ def _interpolated_gate_time(
 
 
 def _sampled_path_length(segment: pd.DataFrame) -> float:
-    """Sum samples when an invalid passage has no complete pair of gate points."""
+    """Compute Euclidean length when an invalid passage lacks two endpoints."""
 
     xy = segment[["x", "y"]].dropna().to_numpy(float)
     return (
@@ -106,13 +88,7 @@ def _sampled_path_length(segment: pd.DataFrame) -> float:
 def _path_length_between_crossings(
     group: pd.DataFrame, entry: dict, exit_event: dict
 ) -> float:
-    """Measure a completed path exactly between interpolated G0 and G3 points.
-
-    The grid sample after G0 is downstream of the true entry, and the grid
-    sample after G3 is downstream of the true exit.  Using only those samples
-    would omit one partial segment and add another.  Explicit interpolated
-    endpoints remove that discretization bias.
-    """
+    """Integrate path length between the interpolated G0 and G3 positions."""
 
     interior = group[
         (group["time"] > entry["time"])
@@ -131,12 +107,12 @@ def _path_length_between_crossings(
 
 def _route_from_core(
     segment: pd.DataFrame, geometry: AnalysisGeometry, config: PassageConfig
-) -> tuple[str, float, float, int]:
-    """Classify a barrier route from signed offsets over the stable core.
+) -> tuple[str, float, int]:
+    """Classify a route using the median offset over the full stable core.
 
     A core median is less sensitive than a single gate sample to tracking noise
-    and short lateral reversals. Sign consistency creates a separate ambiguous
-    class instead of forcing a low-confidence inner/outer decision.
+    or a brief lateral reversal. Near-zero offsets are explicitly ambiguous;
+    missing core coverage is unknown rather than forcing a route label.
     """
 
     core = segment[
@@ -144,26 +120,16 @@ def _route_from_core(
         & segment["valid_pose"]
     ]
     if len(core) < config.minimum_core_samples:
-        return "unknown", np.nan, np.nan, len(core)
-    # Positive and negative offsets denote opposite sides of the fitted
-    # effective separator.  The signed median is the passage-level route score.
+        return "unknown", np.nan, len(core)
     score_samples = core["d"].to_numpy(float) - geometry.splitter_d(
         core["s"].to_numpy(float)
     )
     score = float(np.median(score_samples))
-    # A large median alone can hide repeated side changes.  Sign consistency
-    # measures the dominant fraction on either side across the entire core.
-    sign_consistency = float(
-        max(np.mean(score_samples > 0), np.mean(score_samples < 0))
-    )
-    if (
-        abs(score) <= geometry.ambiguous_half_width_m
-        or sign_consistency < config.minimum_sign_consistency
-    ):
+    if abs(score) <= geometry.ambiguous_half_width_m:
         label = "ambiguous"
     else:
         label = "outer" if score > 0 else "inner"
-    return label, score, sign_consistency, len(core)
+    return label, score, len(core)
 
 
 def detect_passages(
@@ -171,12 +137,10 @@ def detect_passages(
     geometry: AnalysisGeometry,
     config: PassageConfig | None = None,
 ) -> pd.DataFrame:
-    """Pair ordered G0/G3 events and build one row per local passage.
+    """Pair G0/G3 crossings and classify the median route through the core.
 
-    A newly observed G0 replaces any older unmatched G0.  That old entry is
-    retained as ``superseded_by_next_G0`` rather than paired to an exit on a
-    later lap.  Incomplete or implausibly timed passages remain visible with an
-    explicit rejection reason.
+    A new G0 replaces an unmatched older G0. This prevents one missed G3 in a
+    closed-loop run from shifting every later entry/exit pair by one lap.
     """
 
     config = config or PassageConfig()
@@ -194,12 +158,8 @@ def detect_passages(
         entries = _crossings(group, geometry.g0_approach_entry_s, geometry)
         exits = _crossings(group, geometry.g3_recovery_s, geometry)
         for passage_id, entry in enumerate(entries, start=1):
-            # Preserve the original G0 ordering even when an entry is later
-            # superseded; online arrival-state construction still needs it.
             entry["passage_id"] = passage_id
 
-        # Merge the two already ordered event streams.  ``active_entry`` is the
-        # only passage currently travelling through the local analysis region.
         events = sorted(
             [("entry", event) for event in entries]
             + [("exit", event) for event in exits],
@@ -210,9 +170,6 @@ def detect_passages(
         for event_type, event in events:
             if event_type == "entry":
                 if active_entry is not None:
-                    # Seeing another G0 means the old robot circuit reached G0
-                    # again without a valid local G3.  Replacing it prevents a
-                    # one-lap offset from cascading through all later pairs.
                     paired_events.append(
                         (
                             active_entry,
@@ -234,27 +191,18 @@ def detect_passages(
             valid = exit_event is not None
             if valid:
                 duration = (exit_event["time"] - entry["time"]).total_seconds()
-                # Extremely short/long pairs are retained as rejected records
-                # rather than allowed to distort passage-time evaluation.
-                if (
-                    not config.minimum_duration_s
-                    <= duration
-                    <= config.maximum_duration_s
+                if not (
+                    config.minimum_duration_s <= duration <= config.maximum_duration_s
                 ):
                     valid, reason = False, "duration_out_of_range"
             else:
                 duration = np.nan
             segment = group.iloc[entry["index"] : segment_end].copy()
-            # Route classification is computed even for an incomplete segment
-            # when enough core samples exist, but only valid passages enter final
-            # evaluation tables.
-            route_label, route_score, consistency, core_n = _route_from_core(
+            route_label, route_score, core_n = _route_from_core(
                 segment, geometry, config
             )
             if valid and route_label == "unknown":
                 valid, reason = False, "insufficient_core_samples"
-            # Compare travelled polyline length with the straight local G0-to-G3
-            # longitudinal distance to obtain a simple detour measure.
             path_length = (
                 _path_length_between_crossings(group, entry, exit_event)
                 if exit_event is not None
@@ -270,7 +218,6 @@ def detect_passages(
                     "invalid_reason": reason,
                     "route_label": route_label,
                     "route_score_m": route_score,
-                    "core_sign_consistency": consistency,
                     "core_sample_count": core_n,
                     "t_g0": entry["time"],
                     "t_g1": _interpolated_gate_time(
@@ -296,11 +243,7 @@ def detect_passages(
 def extract_passage_samples(
     trajectories: pd.DataFrame, passages: pd.DataFrame, valid_only: bool = True
 ) -> pd.DataFrame:
-    """Recover sample-level passage segments for Figure 2 only.
-
-    The passage table stays the primary structured representation; this helper
-    attaches passage IDs/route labels back to trajectory samples for plotting.
-    """
+    """Collect local trajectory samples belonging to valid detected passages."""
 
     selected = passages[passages["valid"]] if valid_only else passages
     frames: list[pd.DataFrame] = []

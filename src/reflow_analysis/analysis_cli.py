@@ -1,10 +1,4 @@
-"""Command-line interface for the complete six-table/six-figure analysis.
-
-The CLI exposes only settings that are plausible to adjust during data loading
-or interview preparation.  Less frequently changed algorithm thresholds remain
-visible in their module configuration dataclasses and are serialized with each
-run.
-"""
+"""Command-line entry point for the JSON-only main analysis."""
 
 from __future__ import annotations
 
@@ -22,7 +16,7 @@ from .splitter_inference import SplitterInferenceConfig
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Define explicit input/output paths and the main temporal settings."""
+    """Define command-line options for the complete compact analysis."""
 
     parser = argparse.ArgumentParser(
         description="Infer an effective splitter and evaluate its flow response."
@@ -39,22 +33,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _print_table(title: str, table: pd.DataFrame, digits: int = 3) -> None:
-    """Print DataFrames consistently without changing the saved CSV precision."""
+    """Print one readable result table with a consistent heading."""
 
     print(f"\n{title}\n{'-' * len(title)}")
     print(table.round(digits).to_string(index=False))
 
 
 def main() -> None:
-    """Translate CLI arguments to configuration, run, and print key evidence."""
+    """Run the pipeline and print the small set of interview-relevant results."""
 
     args = build_parser().parse_args()
     data_root = args.data_root.expanduser().resolve()
     output_dir = (
         (args.output_dir or data_root / "analysis_output").expanduser().resolve()
     )
-    # Constructing the nested configuration here keeps the CLI thin: every
-    # numerical method remains implemented in its domain module.
     config = FullAnalysisConfig(
         preprocessing=PreprocessingConfig(
             sample_rate_hz=args.sample_rate_hz,
@@ -84,8 +76,6 @@ def main() -> None:
     )
     _print_table("Data quality", result.quality, digits=4)
     _print_table("Inferred effective splitter and gates", geometry_rows)
-    # G2 may lie between grid coordinates, so show the stored cross-section
-    # nearest to it as one compact piece of splitter evidence.
     representative = result.inference.section_diagnostics.iloc[
         (
             result.inference.section_diagnostics["s"]
@@ -99,7 +89,7 @@ def main() -> None:
         "baseline_n",
         "changed_n",
         "wasserstein_m",
-        "null_threshold_m",
+        "baseline_reference_m",
         "cluster_0_center_m",
         "cluster_1_center_m",
         "cluster_separation_m",
@@ -113,6 +103,12 @@ def main() -> None:
     _print_table(
         "Compact evaluation (6 numerical entries per condition)",
         result.evaluation_tables["compact_evaluation"],
+    )
+    _print_table(
+        "Pooled valid-passage mean time",
+        result.evaluation_tables["passage_time_summary"][
+            ["condition", "valid_passages", "mean_passage_time_s", "relative_passage_time"]
+        ],
     )
     _print_table(
         "Per-robot passage time and path length",

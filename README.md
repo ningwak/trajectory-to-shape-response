@@ -1,37 +1,31 @@
 # Trajectory to Shape Response
 
-> **Commented study edition.** This copy contains the same executable Python
-> logic as the standard repository, with substantially expanded English
-> comments and docstrings for offline reading. Start with
-> [COMMENTED_REPO_GUIDE.md](COMMENTED_REPO_GUIDE.md), then use
-> [ALGORITHMS_PSEUDOCODE.md](ALGORITHMS_PSEUDOCODE.md) alongside the source.
-
 A compact, control-oriented analysis pipeline for the RE-FLOW RoboFlow interview dataset. It converts JSON robot trajectories into:
 
-1. a data-derived local flow frame and **effective splitter**;
+1. a horizontal analysis frame from the JSON route edge and a trajectory-derived **effective splitter**;
 2. a 9-component causal state that a future shape-decision agent could observe; and
 3. a separate 6-component post-action evaluation vector.
 
-The methods are deliberately transparent: causal finite differences, spatial occupancy, 1-D Wasserstein distance, two-cluster cross-sections, virtual-gate events, quantiles, and descriptive robot-level metrics. The current two runs demonstrate state construction and response evaluation; they are not sufficient to train a general geometry-selection policy.
+The methods are deliberately transparent: causal finite differences, horizontal cross-section crossings, 1-D Wasserstein distance, two-route clustering, virtual-gate events, quantiles, and descriptive passage-level metrics. The two runs demonstrate state construction and response evaluation; they are not sufficient to train a general geometry-selection policy.
 
 Repository: [ningwak/trajectory-to-shape-response](https://github.com/ningwak/trajectory-to-shape-response)
 
 ## Important interpretation rules
 
-- The JSON `rectangle_corners` field is drawn only as the nominal route boundary. It is **not** treated as the splitter.
+- The JSON `rectangle_corners` field defines the nominal route. Its upper straight edge supplies the horizontal analysis frame; it is **not** treated as the splitter or a barrier-pose measurement.
 - `corridor_width_m` is retained as source metadata. Its exact experiment-specific semantics are not documented in the supplied JSON, so it is **not** used to place the splitter.
 - The inferred line is called an **effective trajectory separator**. It estimates the boundary between observed route families; it does not claim to recover the physical barrier pose.
 - MP4 files are not inputs. Every Python discovery path is restricted to files named `R<robot_id>_*.json`; no script discovers, enumerates, opens, or decodes video.
-- Global route topology is optional and outside the main analysis. The main splitter analysis does not assume a rectangle or require global path recognition.
+- Global route topology is optional and outside the main analysis. This interview-specific mainline explicitly selects the upper nominal rectangle edge; another path requires selecting a different segment or using the optional topology baseline.
 
 ## Main pipeline
 
 ```text
 JSON validation and causal preprocessing
         -> full-trajectory visual check
-        -> 2-D changed-occupancy region
-        -> baseline local flow frame
-        -> cross-section response and effective splitter
+        -> horizontal frame from the JSON upper route edge
+        -> passage-level cross-sections and Wasserstein response
+        -> two-route centres and effective trajectory separator
         -> four virtual gates and structured passages
         -> causal decision state | post-action evaluation
         -> printed tables, CSV files, figures, and JSON config
@@ -49,28 +43,23 @@ The loader validates required metadata and `time, x, y, theta` samples, converts
 
 `valid_pose` and `valid_kinematics` are quality masks, not learned state features. No additional motion-validity flag is calculated because it was not used by the selected state or evaluation metrics.
 
-### B. Full trajectories and local response discovery
+### B. Full trajectories and horizontal analysis frame
 
 `01_full_trajectories.png` draws every robot path for baseline and barrier runs with shared global `x/y` limits and the same 1:1 physical scale. The dashed polygon is the nominal route stored in the JSON; no splitter is drawn at this stage.
 
-To locate the local response region without video or manual coordinates:
-
-1. each trajectory is resampled by arc length so pauses do not dominate occupancy;
-2. smoothed 2-D occupancy is computed separately for baseline and changed conditions;
-3. the strongest connected baseline-depletion component identifies a candidate response region;
-4. valid baseline velocities in that region determine the local tangent `s`; its left normal defines lateral coordinate `d`.
+The complete paths show that this experiment's altered motion is on the upper, nearly horizontal leg of the nominal JSON rectangle. That known route edge defines `s = x - x_mid` and `d = y - y_top`, with `v_s = v_x`. Its vertices are turns, so the analysis grid excludes the outer 10% of the edge at each end. This is an experiment-specific analysis-region choice, **not** a manually specified barrier location. No 2-D occupancy map, arc-length resampling or estimated tilted flow frame is needed in the mainline.
 
 ### C. Effective splitter, approach, and gates
 
-Passage-level lateral crossings are interpolated on a sequence of sections perpendicular to the inferred flow. At each section:
+Each forward passage contributes one interpolated lateral position at each evenly spaced horizontal (`x`) section. This avoids giving slow-moving robots or dense raw timestamps extra weight. At each section:
 
 - 1-D Wasserstein distance compares baseline and changed lateral distributions;
-- a baseline-vs-baseline random split supplies a 95% null threshold;
+- baseline-vs-baseline random half-splits supply an **auxiliary, descriptive** variability line on the plot; they do not select the response interval or claim statistical significance;
 - exact `K=2` 1-D K-means enumerates sorted split points and selects the global minimum-SSE partition;
-- the stable splitter core requires at least three samples per route, at least 0.25 m center separation, silhouette at least 0.55, a depleted midpoint gap, and centers on opposite sides of the baseline median path.
+- the response interval is the contiguous supported region around the W1 peak where W1 is at least 20% of that peak;
+- the stable two-route core requires at least three crossings per side, at least 0.25 m centre separation, and the baseline median path between the two route centres.
 
-Silhouette follows its standard definition: a sample is excluded from its own
-within-cluster distance. An ordinary least-squares line through valid cluster
+Silhouette is retained as a diagnostic, not another tuning threshold; a sample is excluded from its own within-cluster distance. An ordinary least-squares line through valid cluster
 midpoints gives
 
 ```text
@@ -81,19 +70,16 @@ Four virtual gates organize the local control problem:
 
 | Gate | Meaning | Data-derived rule |
 |---|---|---|
-| G0 | approach observation entry | earliest well-supported section upstream of the detected response |
-| G1 | detectable response onset | first supported section whose Wasserstein distance exceeds the null threshold |
+| G0 | approach observation entry | earliest well-supported interior section upstream of the response |
+| G1 | approximate response onset | first section of the sustained peak-relative W1 interval |
 | G2 | route classification section | midpoint of the stable bimodal core |
-| G3 | analysis exit / recovery observation | last well-supported response section |
+| G3 | analysis exit | last section of the sustained peak-relative W1 interval |
 
-If the response remains significant until trajectories leave the well-supported straight section, G3 is an **analysis exit**, not evidence that recovery occurred. The exact values are exported to `config/inferred_geometry.json`.
+When the response persists to the end of the straight-edge grid, G3 is an **analysis exit**, not evidence that recovery occurred. The exact values are exported to `config/inferred_geometry.json`.
 
-G0 is an observation boundary, not a detected turning instant. Its search grid
-extends a configurable distance upstream of the occupancy-response component,
-after which the earliest adequately supported section is selected. The method
-does not use a rule such as `|v_d| > |v_s|` to define approach onset.
+G0 is an observation boundary, not a detected turning instant. The 10% inset avoids placing it on a corner, where a robot may cross the same `x` value more than once. The method does not use `|v_d| > |v_s|` to define approach onset.
 
-The effective-splitter line is drawn only over the contiguous **stable core**, not from the earlier response onset. G1 says that trajectories have begun reacting; the core begins only after two separated routes and a low-occupancy gap are established.
+The effective-separator line is drawn only over the contiguous **stable core**, not from the earlier response onset. G1 marks where distributions begin to differ noticeably; the core begins only once two supported routes are separated.
 
 For each completed G0-to-G3 passage, the route score is the median
 
@@ -101,7 +87,7 @@ For each completed G0-to-G3 passage, the route score is the median
 z_i = median[d_i(s) - d_split(s)]
 ```
 
-over the inferred core. A route is `ambiguous` when the score lies inside the uncertainty band or when signs are insufficiently consistent. Missing core coverage is `unknown` and invalid, not ambiguous.
+over the inferred core. A route is `ambiguous` when its score lies inside the narrow band around the separator. Missing core coverage is `unknown` and invalid, not ambiguous. A separate sign-consistency threshold is no longer used.
 
 Passages are paired by a small chronological state machine. A new G0 replaces
 an older unmatched G0, preventing one missed G3 in a closed-loop run from
@@ -144,18 +130,13 @@ Evaluation is intentionally separate from controller input:
 | Block | Size | Definition |
 |---|---:|---|
 | route proportions | 3 | inner, outer, ambiguous fractions |
-| relative passage time | 1 | median across robots of each robot's barrier/baseline median-time ratio |
-| excess path length | 1 | median across robot-level median excess path lengths |
+| relative passage time | 1 | mean of all valid barrier passages divided by mean of all valid baseline passages |
+| excess path length | 1 | median across all valid passage excess path lengths |
 | lower-tail pair distance | 1 | 10th percentile of timestamp-wise nearest robot-center distance in G1-to-G3 ROI |
 
 Pair distance is evaluated at 2 Hz. At every timestamp with at least two valid robots in the ROI, the minimum Euclidean center distance is found; the reported metric is the 10th percentile across those minima. Because robot radius is unavailable, this is a spacing proxy, not physical clearance.
 
-Repeated laps are first summarized within each robot. Condition summaries then
-take medians across robots, so a robot with more completed laps does not receive
-more weight. Relative passage time is matched by `robot_id` across conditions.
-The repository also exports the complete per-robot passage-time/path-length
-table. No frame-level significance test is applied because there is only one
-run per condition.
+The main passage-time comparison pools valid G0-to-G3 passages within each condition. It answers: *How long did one observed valid passage take on average?* The CLI prints both means, their ratio and the counts. A separate per-robot median table/paired plot exposes heterogeneity but does not determine the headline ratio. Repeated laps are **not independent experimental runs**; no significance test is claimed from them.
 
 Inner/outer labels are meaningful only after a separator has been inferred from the changed condition. Baseline route shares are therefore marked not applicable and omitted from the route-allocation figure.
 
@@ -164,11 +145,11 @@ Inner/outer labels are meaningful only after a separator has been inferred from 
 | File | Purpose |
 |---|---|
 | `01_full_trajectories.png` | raw path overview, identical axes, nominal route from JSON |
-| `02_inferred_local_geometry.png` | inferred frame, gates, approach and barrier routes; baseline paths are neutral gray |
-| `03_wasserstein_profile.png` | response profile, null threshold, supported interval and core |
+| `02_inferred_local_geometry.png` | horizontal frame, gates, approach and barrier routes; baseline paths are neutral gray |
+| `03_wasserstein_profile.png` | response profile, descriptive baseline reference, peak-relative interval and core |
 | `04_cross_section_kmeans.png` | representative lateral samples and K-means centers |
 | `05_route_distribution.png` | stacked route proportions |
-| `06_passage_time.png` | robot-matched passage-time comparison |
+| `06_passage_time.png` | paired robot-level median times (supporting view, not the pooled mean) |
 
 ## Printed and CSV results
 
@@ -177,6 +158,7 @@ The complete CLI prints concise tables for:
 - data quality per robot JSON;
 - inferred splitter and gate landmarks;
 - the compact 6-component evaluation;
+- pooled mean time and valid-passage count per condition;
 - per-robot passage time and path length;
 - invalid and retained passage counts.
 
@@ -308,7 +290,6 @@ trajectory-to-shape-response/
 ├── README.md
 ├── METHODS.md
 ├── ALGORITHMS_PSEUDOCODE.md
-├── COMMENTED_REPO_GUIDE.md
 ├── pyproject.toml
 ├── src/reflow_analysis/
 │   ├── io.py

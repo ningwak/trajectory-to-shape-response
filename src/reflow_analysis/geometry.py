@@ -1,10 +1,4 @@
-"""Represent the inferred local frame and project world-frame trajectories.
-
-The local frame makes the later algorithms independent of whether the relevant
-straight corridor happens to be horizontal, vertical, or rotated in the world
-coordinates.  ``s`` always means motion-aligned longitudinal position and ``d``
-always means signed lateral position.
-"""
+"""Coordinate transforms and inferred analysis landmarks."""
 
 from __future__ import annotations
 
@@ -19,9 +13,11 @@ import pandas as pd
 
 @dataclass(frozen=True)
 class AnalysisGeometry:
-    """Local flow frame, virtual gates, and effective trajectory separator.
+    """Analysis frame and four virtual gates for local passages.
 
-    ``s`` follows the baseline flow and ``d`` is its left normal. The line
+    In the main analysis ``s`` is horizontal x displacement from the nominal
+    route-edge midpoint and ``d`` is vertical y displacement from that edge.
+    The transform itself also supports other orthonormal frames. The line
     ``d = splitter_intercept_m + splitter_slope * s`` is an *effective*
     trajectory separator; it is not presented as a measured physical pose.
     """
@@ -45,13 +41,7 @@ class AnalysisGeometry:
     inference_method: str = "data-derived effective separator"
 
     def __post_init__(self) -> None:
-        """Check the mathematical invariants assumed by downstream algorithms.
-
-        A non-unit or non-orthogonal basis would change distances and velocities
-        during projection.  Unordered gates would make passage pairing and the
-        approach/core region definitions contradictory.  These checks therefore
-        protect concrete assumptions rather than attempting general validation.
-        """
+        """Reject inconsistent local frames and unordered inferred landmarks."""
 
         tnorm = math.hypot(self.tangent_x, self.tangent_y)
         nnorm = math.hypot(self.normal_x, self.normal_y)
@@ -75,7 +65,7 @@ class AnalysisGeometry:
             raise ValueError("Gate width parameters must be non-negative")
 
     def splitter_d(self, s) -> np.ndarray:
-        """Evaluate ``d_split(s) = intercept + slope*s`` for scalar/array input."""
+        """Evaluate the fitted effective-separator line at local coordinate s."""
 
         values = np.asarray(s, dtype=float)
         return self.splitter_intercept_m + self.splitter_slope * values
@@ -84,24 +74,16 @@ class AnalysisGeometry:
 def world_to_corridor(
     samples: pd.DataFrame, geometry: AnalysisGeometry
 ) -> pd.DataFrame:
-    """Project positions and, when present, velocities onto the local basis.
-
-    The operation is a translation followed by two dot products.  Because the
-    basis vectors are unit and orthogonal, values remain in metres and metres
-    per second.  A copy is returned so callers do not mutate raw world columns.
-    """
+    """Add local longitudinal/lateral position and velocity columns."""
 
     missing = {"x", "y"}.difference(samples.columns)
     if missing:
         raise ValueError(f"Missing world-coordinate columns: {sorted(missing)}")
     result = samples.copy()
-    # Translate the world position so the response-region centroid is the local
-    # origin, then project the displacement onto tangent and normal directions.
     dx = result["x"] - geometry.origin_x
     dy = result["y"] - geometry.origin_y
     result["s"] = dx * geometry.tangent_x + dy * geometry.tangent_y
     result["d"] = dx * geometry.normal_x + dy * geometry.normal_y
-    # Velocity is a vector, so it is rotated but not translated.
     if {"vx", "vy"}.issubset(result.columns):
         result["v_s"] = (
             result["vx"] * geometry.tangent_x + result["vy"] * geometry.tangent_y
@@ -113,7 +95,7 @@ def world_to_corridor(
 
 
 def save_geometry(geometry: AnalysisGeometry, path: str | Path) -> Path:
-    """Serialize every frame/gate/separator parameter as readable JSON."""
+    """Serialize inferred geometry to a readable JSON file."""
 
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
