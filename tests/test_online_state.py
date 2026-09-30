@@ -1,3 +1,5 @@
+"""Synthetic three-arrival example for the causal nine-component state."""
+
 from __future__ import annotations
 
 import pandas as pd
@@ -7,6 +9,8 @@ from reflow_analysis.online_state import OnlineStateConfig, extract_online_state
 
 
 def test_recent_crossings_form_compact_quantile_state():
+    # Six simultaneous robot rows provide current approach occupancy.  Three G0
+    # events meet the minimum support required for thirds/median quantiles.
     rows = []
     times = pd.date_range("2026-01-01", periods=2, freq="500ms", tz="UTC")
     for elapsed, time in enumerate(times):

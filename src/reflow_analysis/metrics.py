@@ -1,4 +1,10 @@
-"""Small set of post-action metrics used in the interview analysis."""
+"""Small set of *post-action* metrics used in the interview analysis.
+
+These describe what happened after an intervention and are not inputs to a
+causal geometry-selection policy. The headline passage time is the arithmetic
+mean over valid passage rows, not the average of six robot-level averages.
+The per-robot view remains a useful check for uneven behaviour across robots.
+"""
 
 from __future__ import annotations
 
@@ -51,7 +57,12 @@ def passage_time_tables(passages: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFr
     the two runs are independent experimental replications.
     """
 
+    # Only completed, valid G0-to-G3 traversals contribute. An invalid lap is
+    # still visible in passages.csv together with its reason, but cannot be
+    # assigned a comparable local traversal duration.
     valid = passages[passages["valid"]].copy()
+    # Supporting table: summarize repeat laps *within* each robot. These
+    # medians drive the paired-robot figure, not the condition comparison.
     per_robot = valid.groupby(
         ["condition", "run_name", "robot_id"], as_index=False
     ).agg(
@@ -61,6 +72,10 @@ def passage_time_tables(passages: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFr
         median_excess_path_length_m=("excess_path_length_m", "median"),
     )
     per_robot = sort_by_condition(per_robot, "robot_id")
+    # Main comparison: every valid passage is one observation. This answers
+    # the directly interpretable question, "How long was an observed local
+    # traversal on average in this condition?" It does not estimate a
+    # population causal effect from these two nonreplicated runs.
     condition = valid.groupby("condition", as_index=False).agg(
         mean_passage_time_s=("passage_time_s", "mean"),
         valid_passages=("passage_time_s", "size"),

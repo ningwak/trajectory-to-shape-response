@@ -39,9 +39,10 @@ At each supported section, exact 1-D `K=2` K-means sorts the samples, enumerates
 
 - each cluster contains at least three crossings;
 - route-center separation of at least 0.25 m;
-- the two changed-condition centers to lie on opposite sides of the baseline median path.
+- the two changed-condition centers to lie on opposite sides of the baseline median path; and
+- at most 10% of changed crossings to remain in a band around the baseline median, with half-width 15% of the section's route-center separation.
 
-This prevents the early, still-unimodal response region from being drawn as if a separator were already established. Silhouette remains a descriptive column, not an additional acceptance threshold. Response onset and stable splitter core are therefore different spatial concepts.
+The last rule prevents an early K-means split between a few turning robots and the still-occupied natural path from being drawn as if a separator were already established. Silhouette remains a descriptive column, not an additional acceptance threshold. Response onset and stable splitter core are therefore different spatial concepts. The fitted boundary is descriptive: an ambiguous passage or occasional deviation can still cross it.
 
 K-means is the primary baseline because the exact one-dimensional solution is deterministic, transparent, stable for two visibly separated route bands, and needs few parameters. A Gaussian mixture would add unequal variances and probabilistic assignments, but with six robots it is more initialization-sensitive and can overinterpret tails. GMM is therefore more suitable as a later sensitivity analysis than as the interview baseline.
 

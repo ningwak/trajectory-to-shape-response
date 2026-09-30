@@ -1,4 +1,8 @@
-"""Standalone CLI for the optional global path-topology baseline."""
+"""Standalone CLI for the optional global path-topology baseline.
+
+Keeping this command separate makes it obvious that skeleton topology is an
+extensibility experiment, not a hidden prerequisite of local splitter analysis.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +17,7 @@ from .topology import infer_global_path_topology
 
 
 def main() -> None:
-    """Run the optional global skeleton-graph baseline and export its graph."""
+    """Infer, export, print, and plot the optional baseline skeleton graph."""
 
     parser = argparse.ArgumentParser(
         description="Infer a general baseline path skeleton graph."
@@ -39,6 +43,8 @@ def main() -> None:
         cmap="Greys",
         alpha=0.55,
     )
+    # Draw straight node-to-node graph edges over the occupancy raster.  This is
+    # a diagnostic rendering, not a smoothed physical path reconstruction.
     for edge in result.edge_table.itertuples(index=False):
         nodes = result.node_table.set_index("node_id").loc[[edge.source, edge.target]]
         ax.plot(nodes["x"], nodes["y"], color="#C00000", lw=0.8)

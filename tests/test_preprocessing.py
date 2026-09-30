@@ -1,3 +1,5 @@
+"""Synthetic irregular-start example for shared-grid causal preprocessing."""
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -40,6 +42,8 @@ def make_robot(robot_id: int, start_offset_s: float = 0.0) -> RobotTrajectory:
 
 
 def test_intersection_alignment_and_causal_velocity():
+    # Robot 2 starts 0.05 s later, so intersection alignment must begin there.
+    # The 0.10 s velocity window then requires two grid steps of valid history.
     robot_1 = make_robot(20)
     robot_2 = make_robot(24, start_offset_s=0.05)
     robot_2 = replace(

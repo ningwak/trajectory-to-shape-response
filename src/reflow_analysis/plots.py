@@ -138,7 +138,7 @@ def plot_inferred_local_geometry(
                 geometry.splitter_d(core_s),
                 color="#111111",
                 lw=3,
-                label="effective splitter",
+                label="effective route separator",
             )
             ax.fill_between(
                 core_s,

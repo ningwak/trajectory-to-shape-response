@@ -95,8 +95,11 @@ def run_full_analysis(
     runs = load_dataset(data_root)
     trajectories, quality = preprocess_dataset(runs, config.preprocessing)
     manifest = build_run_manifest(runs)
-    # The upper nominal edge gives a reproducible horizontal analysis frame;
-    # these corners do not supply (or imply) a physical barrier location.
+    # The upper nominal edge gives a reproducible horizontal analysis frame.
+    # The video and full-path plot motivate analysing this leg, but neither a
+    # video-derived coordinate nor a physical barrier annotation enters here.
+    # The separator and response interval are inferred from *trajectory*
+    # crossings afterward; the JSON corners do not reveal a barrier location.
     inferred = infer_effective_splitter(
         trajectories, runs[0].robots[0].rectangle_corners, config.splitter
     )

@@ -1,3 +1,5 @@
+"""Executable example of projecting a rotated/translated world frame to (s,d)."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -7,6 +9,9 @@ from reflow_analysis.geometry import AnalysisGeometry, world_to_corridor
 
 
 def test_world_to_corridor_uses_the_inferred_frame():
+    # Tangent points along world +y and normal along world -x.  Constructing
+    # world points analytically from known s/d values makes expected projections
+    # independent of the implementation under test.
     geometry = AnalysisGeometry(
         origin_x=1.0,
         origin_y=2.0,

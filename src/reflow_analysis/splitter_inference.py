@@ -1,8 +1,24 @@
 """Infer an effective route separator on the horizontal upper corridor leg.
 
-The JSON supplies a nominal rectangular route, but not the physical barrier
-pose. The upper reference edge defines our analysis frame; the separator is
-inferred from where the recorded passages actually travel.
+Reading map for the interview analysis:
+
+1. The nominal JSON route locates a *straight segment to analyse*. Its corners
+   do not locate the physical obstacle. We deliberately use x as longitudinal
+   position and y as lateral position rather than fitting a tilted frame.
+2. At each interior x section, interpolate every forward crossing. A crossing
+   is one passage observation, so stopped robots do not dominate a spatial
+   comparison merely because they have more logged frames.
+3. Compare baseline and barrier lateral samples using 1-D Wasserstein distance.
+   Select a contiguous, sufficiently supported peak-relative response area.
+   Baseline random splits are shown only as a descriptive scale reference.
+4. On changed-condition sections, fit exact K=2 one-dimensional K-means. Use
+   only the sections with enough crossings in each separated route, with the
+   baseline median between the route centres, and with few changed-condition
+   crossings still on the natural route to fit an effective separator.
+
+The result describes *observed route geometry*, not the measured pose or length
+of a physical barrier. G0/G3 delimit the analysed passages; G1 is an approximate
+response onset and G2 lies in the clearly split part of the response.
 """
 
 from __future__ import annotations
@@ -18,13 +34,21 @@ from .geometry import AnalysisGeometry, world_to_corridor
 
 @dataclass(frozen=True)
 class SplitterInferenceConfig:
-    """Transparent cross-section settings for this near-horizontal experiment."""
+    """Cross-section settings, with interpretable geometric units.
+
+    The inset removes nominal corners; section spacing controls spatial
+    resolution. The cluster count/separation requirements stop an arbitrary
+    K=2 split from being interpreted as two physically distinct routes.
+    Random-split settings affect only the reference line on Figure 3.
+    """
 
     section_step_m: float = 0.04
     section_half_width_m: float = 0.75
     edge_inset_fraction: float = 0.10
     minimum_cluster_samples: int = 3
     minimum_core_separation_m: float = 0.25
+    natural_path_band_fraction: float = 0.15
+    maximum_natural_path_fraction: float = 0.10
     minimum_supported_fraction: float = 0.75
     response_fraction_of_peak: float = 0.20
     baseline_split_repeats: int = 100
@@ -75,7 +99,14 @@ def _upper_reference_edge(
 def _interpolate_sections(
     aligned: pd.DataFrame, s_grid: np.ndarray, lateral_limit: float
 ) -> pd.DataFrame:
-    """Interpolate forward crossings; each row is one passage-level section sample."""
+    """Interpolate forward crossings, one row per passage and section.
+
+    The strict-to-nonstrict inequality counts a section once when successive
+    observations straddle it. Linear interpolation estimates the lateral
+    location and event time between those two valid poses. Crossings outside
+    the lateral analysis strip are excluded. A robot can contribute multiple
+    rows on repeated laps, but not one row for every frame it spends nearby.
+    """
 
     rows: list[dict[str, object]] = []
     keys = ["condition", "run_name", "robot_id"]
@@ -256,6 +287,9 @@ def infer_effective_splitter(
     """
 
     config = config or SplitterInferenceConfig()
+    # Choose the upper horizontal route edge from metadata. The original
+    # corner y coordinate is only a coordinate origin: no splitter y or
+    # physical obstacle endpoint is read from the JSON.
     x_left, x_right, y_top = _upper_reference_edge(rectangle_corners)
     origin_x = 0.5 * (x_left + x_right)
     provisional = AnalysisGeometry(origin_x=origin_x, origin_y=y_top)
@@ -270,8 +304,12 @@ def infer_effective_splitter(
         x_right - inset - origin_x + config.section_step_m / 2,
         config.section_step_m,
     )
+    # A section produces a lateral sample *when crossed*, avoiding a raw-frame
+    # occupancy comparison that would overweight low-speed segments.
     crossings = _interpolate_sections(aligned, s_grid, config.section_half_width_m)
     changed_name = _changed_condition(crossings["condition"])
+    # This quantity is stored in diagnostics for visual context only. It does
+    # not enter the response mask, the stable core, or the gate locations.
     reference = _baseline_variability_reference(crossings, s_grid, config)
 
     rows: list[dict[str, object]] = []
@@ -301,6 +339,7 @@ def infer_effective_splitter(
             "silhouette": np.nan,
             "minimum_cluster_n": 0,
             "baseline_median_m": np.nan,
+            "natural_path_fraction": np.nan,
             "stable_core_valid": False,
         }
         if len(changed) >= 2 * config.minimum_cluster_samples:
@@ -309,12 +348,31 @@ def infer_effective_splitter(
             separation = centers[1] - centers[0]
             baseline_median = float(np.median(base)) if len(base) else np.nan
             midpoint = float(centers.mean())
-            # K=2 always returns two centers, even for one broad path. Require
-            # two populated, separated sides around the natural baseline path.
+            # A K=2 split can appear before two usable routes form: one small
+            # group starts turning while most robots still follow the natural
+            # path. In that situation a line between the two cluster means
+            # cuts through trajectories. Inspect a central band around the
+            # baseline median and wait until most changed passages leave it.
+            # The band spans 30% of the observed centre separation in total.
+            natural_path_fraction = (
+                float(
+                    np.mean(
+                        np.abs(changed - baseline_median)
+                        <= config.natural_path_band_fraction * separation
+                    )
+                )
+                if np.isfinite(baseline_median)
+                else np.nan
+            )
+            # K=2 always returns two centers, even for a unimodal sample. Thus
+            # route evidence also requires enough crossings on both sides,
+            # measurable separation, and the natural median between centers.
+            # Silhouette is reported but does not become a further threshold.
             stable_core = (
                 counts.min() >= config.minimum_cluster_samples
                 and separation >= config.minimum_core_separation_m
                 and centers[0] < baseline_median < centers[1]
+                and natural_path_fraction <= config.maximum_natural_path_fraction
             )
             row.update(
                 {
@@ -325,6 +383,7 @@ def infer_effective_splitter(
                     "silhouette": silhouette,
                     "minimum_cluster_n": int(counts.min()),
                     "baseline_median_m": baseline_median,
+                    "natural_path_fraction": natural_path_fraction,
                     "stable_core_valid": bool(stable_core),
                 }
             )
@@ -347,7 +406,8 @@ def infer_effective_splitter(
     if not np.isfinite(peak) or peak <= 0:
         raise RuntimeError("No supported trajectory response was found")
     # A simple peak-relative interval describes where the observed difference
-    # persists. It does not claim a statistically exact intervention onset.
+    # persists. It does not claim a statistically exact intervention onset;
+    # the baseline-split reference above is intentionally absent here.
     response = supported & (profile >= config.response_fraction_of_peak * peak)
     response_start, response_end = _interval_near_peak(response, max_index)
     core_mask = response & diagnostics["stable_core_valid"].to_numpy(dtype=bool)
@@ -362,6 +422,9 @@ def infer_effective_splitter(
         raise RuntimeError(
             "At least two stable sections are required to fit a separator"
         )
+    # The route-centre midpoint estimates an effective boundary at each stable
+    # section. Fitting one line gives a compact geometry without fitting the
+    # physical barrier directly, which the trajectories cannot identify.
     coefficients = np.polyfit(core["s"], core["separator_midpoint_m"], deg=1)
     slope, intercept = map(float, coefficients)
     median_separation = float(core["cluster_separation_m"].median())

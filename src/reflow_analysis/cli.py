@@ -1,4 +1,9 @@
-"""Command-line entry point for dataset loading and preprocessing."""
+"""Standalone command-line interface for inspecting preprocessing only.
+
+This entry point is useful before running splitter inference: it can export the
+aligned trajectory table, quality report, and run manifest in CSV or Parquet.
+It is separate from the compact main output and is not invoked by that pipeline.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +17,7 @@ from .preprocessing import PreprocessingConfig, preprocess_dataset
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Define options for preprocessing without downstream analysis."""
+    """Define paths, temporal settings, alignment mode, and output format."""
 
     parser = argparse.ArgumentParser(
         description="Load and preprocess the RE-FLOW RoboFlow trajectory dataset."
@@ -47,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    """Run JSON loading and causal preprocessing as a standalone command."""
+    """Load, preprocess, export, and record the exact preprocessing settings."""
 
     args = build_parser().parse_args()
     data_root = args.data_root.expanduser().resolve()

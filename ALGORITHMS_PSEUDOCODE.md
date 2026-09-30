@@ -367,11 +367,14 @@ ALGORITHM DiagnoseSection(baseline_d, barrier_d)
         separation <- centers(1) - centers(0)
         midpoint <- mean(centers)
         baseline_median <- median(baseline_d)
+        natural_path_fraction <- fraction of barrier_d within
+            0.15 * separation of baseline_median
 
         stable_core_valid <-
             min(counts) >= 3
             AND separation >= 0.25 m
             AND centers(0) < baseline_median < centers(1)
+            AND natural_path_fraction <= 0.10
     ELSE
         stable_core_valid <- FALSE
     END IF
@@ -439,7 +442,8 @@ END ALGORITHM
 ```
 
 `G1` and `core_start` are intentionally different. `G1` marks an approximate
-peak-relative response onset; `core_start` marks a supported two-route split.
+peak-relative response onset; `core_start` marks two separated routes after the
+natural-path region is mostly vacated.
 Neither locates the physical barrier endpoint or establishes statistical
 significance.
 

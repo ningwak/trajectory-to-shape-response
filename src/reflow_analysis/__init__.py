@@ -1,4 +1,9 @@
-"""Trajectory-to-shape-response analysis for the RE-FLOW dataset."""
+"""Small public API for the trajectory-to-shape-response analysis package.
+
+Internal underscore-prefixed helpers remain in their modules so the top-level
+namespace exposes pipeline stages and configuration objects rather than every
+implementation detail.
+"""
 
 from .geometry import AnalysisGeometry, world_to_corridor
 from .io import RobotTrajectory, RunData, load_dataset, load_robot_file, load_run

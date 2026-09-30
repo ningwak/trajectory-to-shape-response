@@ -57,7 +57,7 @@ Each forward passage contributes one interpolated lateral position at each evenl
 - baseline-vs-baseline random half-splits supply an **auxiliary, descriptive** variability line on the plot; they do not select the response interval or claim statistical significance;
 - exact `K=2` 1-D K-means enumerates sorted split points and selects the global minimum-SSE partition;
 - the response interval is the contiguous supported region around the W1 peak where W1 is at least 20% of that peak;
-- the stable two-route core requires at least three crossings per side, at least 0.25 m centre separation, and the baseline median path between the two route centres.
+- the stable two-route core requires at least three crossings per side, at least 0.25 m centre separation, the baseline median path between the two route centres, and at most 10% of changed crossings within a narrow natural-path band (±15% of the route-centre separation around the baseline median).
 
 Silhouette is retained as a diagnostic, not another tuning threshold; a sample is excluded from its own within-cluster distance. An ordinary least-squares line through valid cluster
 midpoints gives
@@ -79,7 +79,7 @@ When the response persists to the end of the straight-edge grid, G3 is an **anal
 
 G0 is an observation boundary, not a detected turning instant. The 10% inset avoids placing it on a corner, where a robot may cross the same `x` value more than once. The method does not use `|v_d| > |v_s|` to define approach onset.
 
-The effective-separator line is drawn only over the contiguous **stable core**, not from the earlier response onset. G1 marks where distributions begin to differ noticeably; the core begins only once two supported routes are separated.
+The effective-separator line is drawn only over the contiguous **stable core**, not from the earlier response onset. G1 marks where distributions begin to differ noticeably; the core begins once the natural path is mostly vacated and two supported routes are separated. The line is a descriptive boundary between observed paths, so an ambiguous passage or occasional deviation can still cross it.
 
 For each completed G0-to-G3 passage, the route score is the median
 
